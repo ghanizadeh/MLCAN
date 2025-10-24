@@ -11,6 +11,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import train_test_split
 
 # ================================
 # Utility functions
@@ -30,7 +31,7 @@ def evaluate_metrics(y_true, y_pred):
 
 def plot_pred_vs_true(y_true, y_pred, target_name, dataset_type):
     plt.figure(figsize=(5, 5))
-    plt.scatter(y_true, y_pred, alpha=0.5, edgecolor="k")
+    plt.scatter(y_true, y_pred, alpha=0.6, edgecolor="k")
     lims = [min(y_true.min(), y_pred.min()), max(y_true.max(), y_pred.max())]
     plt.plot(lims, lims, "r--")
     plt.xlabel("True")
@@ -82,7 +83,7 @@ def extract_cross_features(window_df, opts):
     return feats
 
 # ================================
-# Sliding window
+# Sliding window helpers
 # ================================
 def window_indices(n, win, hop):
     idx = []
@@ -92,100 +93,151 @@ def window_indices(n, win, hop):
         start += hop
     return idx
 
-def build_dataset(df, features_time, features_freq, features_cross,
-                  window_sec, overlap, fs, target, indicator_choice):
-    rows, targets = [], []
-    sensors = [c for c in df.columns if c.startswith("Sensor")]
+def build_dataset_from_files(file_list, features_time, features_freq, features_cross,
+                             window_sec, overlap, fs, target, indicator_choice):
+    """
+    Build dataset from multiple CSVs.
+    - If window_sec == 0: one feature vector per file.
+    - Else: sliding windows per file.
+    """
+    all_rows, all_targets = [], []
 
-    # Indicator filter
-    if indicator_choice != "both" and "indicator" in df.columns:
-        df = df[df["indicator"] == int(indicator_choice)]
+    for file_path in file_list:
+        try:
+            df = pd.read_csv(file_path)
+        except Exception as e:
+            print(f"Skipping {file_path} due to error: {e}")
+            continue
 
-    win = int(window_sec * fs)
-    hop = int(win * (1 - overlap))
-    idxs = window_indices(len(df), win, hop)
+        sensors = [c for c in df.columns if c.startswith("Sensor")]
 
-    for (i0, i1) in idxs:
-        wdf = df.iloc[i0:i1]
-        feats = {}
-        for s in sensors:
-            x = wdf[s].values
-            feats.update(extract_time_features(x, features_time, prefix=f"{s}_time"))
-            feats.update(extract_freq_features(x, fs, features_freq, prefix=f"{s}_freq"))
-        feats.update(extract_cross_features(wdf, features_cross))
-        rows.append(feats)
-        targets.append(wdf[target].median())
+        # Indicator filter
+        if indicator_choice != "both" and "indicator" in df.columns:
+            df = df[df["indicator"] == int(indicator_choice)]
+        if df.empty:
+            continue
 
-    return pd.DataFrame(rows).fillna(0), np.array(targets)
+        # --- Case 1: Full-signal mode ---
+        if window_sec == 0:
+            feats = {}
+            for s in sensors:
+                x = df[s].values
+                feats.update(extract_time_features(x, features_time, prefix=f"{s}_time"))
+                feats.update(extract_freq_features(x, fs, features_freq, prefix=f"{s}_freq"))
+            feats.update(extract_cross_features(df, features_cross))
+            all_rows.append(feats)
+            all_targets.append(df[target].median())
+            continue
+
+        # --- Case 2: Sliding-window mode ---
+        win = int(window_sec * fs)
+        hop = int(win * (1 - overlap))
+        idxs = window_indices(len(df), win, hop)
+
+        for (i0, i1) in idxs:
+            wdf = df.iloc[i0:i1]
+            feats = {}
+            for s in sensors:
+                x = wdf[s].values
+                feats.update(extract_time_features(x, features_time, prefix=f"{s}_time"))
+                feats.update(extract_freq_features(x, fs, features_freq, prefix=f"{s}_freq"))
+            feats.update(extract_cross_features(wdf, features_cross))
+            all_rows.append(feats)
+            all_targets.append(wdf[target].median())
+
+    return pd.DataFrame(all_rows).fillna(0), np.array(all_targets)
 
 # ================================
-# Streamlit page
+# Streamlit Page
 # ================================
 def show_RF_window_page():
-    st.title("🌲 Random Forest with Sliding Windows")
+    st.title("🌲 Random Forest with Sliding or Full-Signal Features")
 
-    # --- File input ---
-    option = st.radio("Choose input method:", ("Local folder", "Upload CSVs"))
-    dfs = []
-    if option == "Local folder":
-        folder_path = st.text_input("📂 Enter folder path with CSVs:")
-        if folder_path and os.path.isdir(folder_path):
-            files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
-            for f in files:
-                try:
-                    dfs.append(pd.read_csv(os.path.join(folder_path, f)))
-                except Exception as e:
-                    st.error(f"❌ {f}: {e}")
-    else:
-        uploaded_files = st.file_uploader("Upload CSVs", type="csv", accept_multiple_files=True)
-        if uploaded_files:
-            for f in uploaded_files:
-                try:
-                    dfs.append(pd.read_csv(f))
-                except Exception as e:
-                    st.error(f"❌ {f.name}: {e}")
-    if not dfs: return
-    df = pd.concat(dfs, ignore_index=True)
+    # --- File Input ---
+    folder_path = st.text_input("📂 Enter folder path with CSV signals:")
+    if not folder_path or not os.path.isdir(folder_path):
+        st.info("Please provide a valid folder path containing CSV signal files.")
+        return
 
-    # --- Config ---
+    files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".csv")]
+    if not files:
+        st.error("No CSV files found in the folder.")
+        return
+
+    # --- Configuration ---
     target = st.selectbox("🎯 Select target", ["CRL", "AliCat"])
     fs = st.number_input("Sampling frequency (Hz)", value=1065, step=1)
-    window_sec = st.slider("Window size (s)", 0.5, 10.0, 2.0, 0.5)
+    window_sec = st.slider("Window size (s)", 0.0, 60.0, 0.0, 0.5)  # allow 0
     overlap = st.slider("Overlap (%)", 0, 90, 50, 5) / 100.0
-    indicator_choice = st.radio("Indicator filter", ["0", "1", "both"], index=1)
+    indicator_choice = st.radio("Indicator filter", ["0", "1", "both"], index=2)
+    train_size = st.slider("Training set size (%)", 50, 90, 70, 5) / 100.0
 
     with st.expander("⚙️ Feature selection", expanded=True):
-        features_time = st.multiselect("Time-domain", ["Mean","Median","Std","Min","Max","Range","RMS","Skew","Kurtosis"], default=["Mean","Std"])
-        features_freq = st.multiselect("Frequency-domain", ["Spectral Centroid","Band Power","Peak Frequency"], default=["Spectral Centroid"])
-        features_cross = st.multiselect("Cross-sensor", ["Correlation","Diff"], default=[])
+        features_time = st.multiselect(
+            "Time-domain features",
+            ["Mean","Median","Std","Min","Max","Range","RMS","Skew","Kurtosis"],
+            default=["Mean","Std"]
+        )
+        features_freq = st.multiselect(
+            "Frequency-domain features",
+            ["Spectral Centroid","Band Power","Peak Frequency"],
+            default=["Spectral Centroid"]
+        )
+        features_cross = st.multiselect(
+            "Cross-sensor features", ["Correlation","Diff"], default=[]
+        )
 
-    # --- Train ---
+    # --- Train Model ---
     if st.button("🚀 Train Random Forest"):
-        X, y = build_dataset(df, features_time, features_freq, features_cross,
-                             window_sec, overlap, fs, target, indicator_choice)
+        with st.spinner("Extracting features..."):
+            X, y = build_dataset_from_files(
+                files, features_time, features_freq, features_cross,
+                window_sec, overlap, fs, target, indicator_choice
+            )
+
+        if X.empty:
+            st.error("No features were extracted — check your input settings.")
+            return
+
+        st.subheader("🧾 Extracted Dataset Preview")
+        st.write(X.head())
+        st.write(f"Feature matrix shape: {X.shape}, Target shape: {y.shape}")
+
+        # Train/test split
+        X_train, X_test, y_train, y_test = train_test_split(X, y, train_size=train_size, random_state=42)
 
         pipe = Pipeline([
             ("scaler", StandardScaler()),
             ("rf", RandomForestRegressor(n_estimators=300, random_state=42, n_jobs=-1))
         ])
-        pipe.fit(X, y)
-        y_pred = pipe.predict(X)
+        pipe.fit(X_train, y_train)
 
-        # Metrics
-        st.subheader("📊 Metrics (in-sample)")
-        st.write(evaluate_metrics(y, y_pred))
+        # Predict
+        y_pred_train = pipe.predict(X_train)
+        y_pred_test = pipe.predict(X_test)
 
-        # Plot
+        # Evaluate
+        metrics_train = evaluate_metrics(y_train, y_pred_train)
+        metrics_test = evaluate_metrics(y_test, y_pred_test)
+        st.subheader("📊 Model Performance")
+        metrics_df = pd.DataFrame([metrics_train, metrics_test], index=["Train", "Test"])
+        st.table(metrics_df)
+
+        # Plots
         st.subheader("📈 Predicted vs True")
-        plot_pred_vs_true(y, y_pred, target, "Train (all windows)")
+        col1, col2 = st.columns(2)
+        with col1:
+            plot_pred_vs_true(y_train, y_pred_train, target, "Train")
+        with col2:
+            plot_pred_vs_true(y_test, y_pred_test, target, "Test")
 
-        # Feature importance
+        # Feature importances
         importances = pipe.named_steps["rf"].feature_importances_
         fi_df = pd.DataFrame({"Feature": X.columns, "Importance": importances}).sort_values("Importance", ascending=False)
         st.subheader("🔍 Feature Importances")
         st.dataframe(fi_df)
 
-        # Save
+        # Save model
         model_path = f"{target}_rf_window.pkl"
         joblib.dump(pipe, model_path)
         st.success(f"✅ Model saved as {model_path}")

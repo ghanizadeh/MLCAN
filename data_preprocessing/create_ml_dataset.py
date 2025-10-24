@@ -1,18 +1,18 @@
-# utility/create_ml_dataset.py
 import os
 import numpy as np
 import pandas as pd
 from scipy.stats import skew, kurtosis, entropy
-from scipy.signal import welch, find_peaks
+from scipy.signal import welch
 from scipy.fft import fft
 import streamlit as st
+import time
 
-# ======================
-# Feature extractor
-# ======================
+# =========================================================
+# 🧮 Feature Extractor
+# =========================================================
 def extract_features(df_window, selected_time, selected_freq, selected_cross, selected_slug, selected_sensors):
     feats = {}
-    cols = selected_sensors   # use user-selected sensors
+    cols = selected_sensors
 
     # --- TIME DOMAIN ---
     for col in cols:
@@ -51,8 +51,7 @@ def extract_features(df_window, selected_time, selected_freq, selected_cross, se
         fft_vals = fft(x)
         mag = np.abs(fft_vals)
         power = mag**2
-        norm_power = power/np.sum(power)
-
+        norm_power = power / np.sum(power)
         if "fft_energy" in selected_freq: feats[f"FREQ_{col}_fft_energy"] = np.sum(power)
         if "fft_entropy" in selected_freq: feats[f"FREQ_{col}_fft_entropy"] = -np.sum(norm_power*np.log(norm_power+1e-12))
         if "fft_peak_mag" in selected_freq: feats[f"FREQ_{col}_fft_peak_mag"] = np.max(mag)
@@ -67,259 +66,258 @@ def extract_features(df_window, selected_time, selected_freq, selected_cross, se
 
     return feats
 
-# ======================
-# Sliding Window Helper
-# ======================
-def sliding_window(df, window_size, overlap, fs):
-    step = int(window_size * fs * (1 - overlap))
-    size = int(window_size * fs)
-    windows = []
-    for start in range(0, len(df) - size + 1, step):
-        windows.append(df.iloc[start:start+size])
-    return windows
-
-# ======================
-# Find Signal Zero Helper
-# ======================
-def get_signal_zero_means(folder_path, indicator_choice, auto_trim_size=None):
+# =========================================================
+# 🧭 Signal Zero Detection
+# =========================================================
+def get_signal_zero_means(folder_path, indicator_choice, auto_trim_size=None, sensors=None):
     zero_means = {}
+    if sensors is None or len(sensors) < 2:
+        return None
+
     for file in os.listdir(folder_path):
         if file.lower().endswith(".csv") and "alicat0.0" in file.lower() and "vfd0.0" in file.lower():
             try:
                 df = pd.read_csv(os.path.join(folder_path, file))
-                if indicator_choice != "both":
+                if indicator_choice != "both" and "indicator" in df.columns:
                     df = df[df["indicator"] == int(indicator_choice)]
-                if auto_trim_size is not None and len(df) > auto_trim_size:
+                if auto_trim_size and len(df) > auto_trim_size:
                     df = df.iloc[:auto_trim_size]
-                zero_means["Sensor1"] = df["Sensor1"].mean()
-                zero_means["Sensor2"] = df["Sensor2"].mean()
-                st.info(f"📏 Signal Zero detected from `{file}` (S1={zero_means['Sensor1']:.4f}, S2={zero_means['Sensor2']:.4f})")
+                for s in sensors[:2]:
+                    if s in df.columns:
+                        zero_means[s] = df[s].mean()
+                st.info(f"📏 Signal Zero detected from `{file}` using {list(zero_means.keys())}")
                 return zero_means
             except Exception as e:
                 st.error(f"⚠️ Could not read {file}: {e}")
     st.warning("⚠️ No Signal Zero file found (AliCat0.0 & VFD0.0).")
     return None
 
-# ======================
-# Main Streamlit Page
-# ======================
+# =========================================================
+# 🧩 Main Streamlit Function
+# =========================================================
 def show_create_ML_dataset():
-    #st.markdown("### 🧮 Create ML Dataset from Processed CSVs")
+    if "results" not in st.session_state:
+        st.session_state.results = []
+    results = st.session_state.results
 
-    with st.container(border=True):
-        st.markdown("#### 📡 Select Sensors ####")
-        all_sensors = ["Sensor1","Sensor2","Sensor3","Sensor4","Sensor5","Sensor6"]
-        selected_sensors = st.multiselect("Choose sensors to include:", all_sensors, default=all_sensors)
+    # =====================================================
+    # 📂 Source Selection (first)
+    # =====================================================
+    st.markdown("### 📂 Select Source Data")
+    option = st.radio("Choose source:", ["Upload CSVs", "Local Folder"], index=0)
+    folder_path = None
+    uploaded_files = []
 
-    # --- Feature selection ---
-    with st.container(border=True):
-        st.markdown("#### 🔧 Select Features ####")
-        selected_time = st.multiselect("Time-domain features:",
-            ["mean","std","min","max","median","range","skew","kurtosis","rms","p25","p75","iqr","cv","entropy"],
-            default=["mean","std"])
-        selected_freq = st.multiselect("Frequency-domain features:",
-            ["dom_freq","spec_centroid","spec_bw","total_power","low_power","mid_power","high_power","spectral_entropy",
-            "fft_energy","fft_entropy","fft_peak_mag","fft_peak_freq"],
-            default=["dom_freq","spec_centroid"])
-        selected_cross = st.multiselect("Cross-sensor features:", ["dp","corr","phase"], default=["dp"])
-        selected_slug = st.multiselect("Slugging features:",
-            ["peak_count","peak_rate","crest_factor","peak_to_mean","zero_cross"],
-            default=["peak_count","peak_rate"])
+    if option == "Local Folder":
+        folder_path = st.text_input("Enter LOCAL folder path containing CSV files:")
+    else:
+        uploaded_files = st.file_uploader("Upload CSV files", type="csv", accept_multiple_files=True)
 
-    # --- Options ---
-    # --- Options ---
-    with st.container(border=True):
-        st.markdown("#### ⚙️ Options ####")
-        use_sliding = st.radio("**Sliding Window** method:", ["No - Use Entire Signal", "Yes - Apply Sliding Windows"], index=0)
-        if use_sliding == "Yes - Apply Sliding Windows":
-            fs = st.number_input("Sampling frequency (Hz)", min_value=1, value=100)
-            window_size = st.number_input("Window size (seconds)", min_value=1, value=2)
-            overlap_pct = st.slider("Overlap (%)", 0, 90, 50)
-            overlap = overlap_pct/100
-        else:
-            fs, window_size, overlap = None, None, None
+    # =====================================================
+    # 🔍 Auto-detect Columns from first file
+    # =====================================================
+    st.markdown("### 📡 Select Sensors and Targets")
+    uploaded_sample, folder_sample = None, None
+    sample_df, sample_name = None, None
 
-        apply_signal_zero = st.checkbox("Apply **Signal Zero adjusment** (AliCat0.0 & VFD0.0 baseline)", value=False,
-                                        help="If enabled, the means of sensor 1 & 2 will be adjusted.")
+    if option == "Upload CSVs" and uploaded_files:
+        uploaded_sample = pd.read_csv(uploaded_files[0], nrows=5)
+        sample_df, sample_name = uploaded_sample, uploaded_files[0].name
+    elif option == "Local Folder" and folder_path and os.path.isdir(folder_path):
+        csvs = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".csv")]
+        if csvs:
+            folder_sample = pd.read_csv(csvs[0], nrows=5)
+            sample_df, sample_name = folder_sample, os.path.basename(csvs[0])
 
-        remove_blocks = st.selectbox("**Remove trailing blocks** (1 block = 2048 samples)", ["None", "Auto-adjust to uniform signal length"])
-        indicator_choice = st.radio("Select indicator:", [1, 0, "both"], index=0)
+    if sample_df is not None:
+        all_cols = list(sample_df.columns)
+        numeric_cols = [c for c in all_cols if np.issubdtype(sample_df[c].dtype, np.number)]
+        st.success(f"✅ Columns auto-detected from `{sample_name}` ({len(all_cols)} total columns)")
+    else:
+        numeric_cols = []
+        st.warning("⚠️ No file detected yet — please upload or enter a valid folder path.")
 
-        # --- Target aggregation choice ---
-        target_method = st.radio("How to compute CRL/AliCat target per window?", ["Median", "Mean"], index=0)
+    possible_sensors = [c for c in numeric_cols if any(x in c.lower() for x in ["sensor", "pt-", "pressure"])]
+    possible_targets = [c for c in numeric_cols if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql", "qw", "qgst", "qost", "qwst"])]
 
-        # --- NEW Cleaning options ---
-        remove_nans = st.checkbox("Remove rows with NaNs", value=False)
-        remove_dupes = st.checkbox("Remove duplicate rows", value=False)
+    selected_sensors = st.multiselect(
+        "Select sensor columns:",
+        options=possible_sensors if possible_sensors else numeric_cols,
+        default=possible_sensors[:6] if len(possible_sensors) >= 6 else possible_sensors,
+    )
 
-    # --- Source ---
-    #with st.container(border=True):
-    st.markdown("#### 📂 Select source ####")
-    option = st.radio("Enter the source folder:", ["Local folder", "Upload CSVs"])
-    #sensor_cols = ["Sensor5","Sensor3","Sensor1","CRL","Sensor6","Sensor4","Sensor2","AliCat"]
+    selected_targets = st.multiselect(
+        "Select target columns:",
+        options=possible_targets if possible_targets else numeric_cols,
+        default=possible_targets[:2] if len(possible_targets) >= 2 else [],
+    )
 
-    results = []
+    target_method = st.radio("How to compute target per window?", ["Median", "Mean"], index=1)
 
+    # =====================================================
+    # ⚙️ Feature Options
+    # =====================================================
+    st.markdown("### ⚙️ Feature Options")
+    selected_time = st.multiselect("Time-domain features:",
+        ["mean","std","min","max","median","range","skew","kurtosis","rms","p25","p75","iqr","cv","entropy"],
+        default=["mean","std"])
+    selected_freq = st.multiselect("Frequency-domain features:",
+        ["dom_freq","spec_centroid","spec_bw","total_power","low_power","mid_power","high_power","spectral_entropy",
+         "fft_energy","fft_entropy","fft_peak_mag","fft_peak_freq"],
+        default=["dom_freq","spec_centroid"])
+    selected_cross = st.multiselect("Cross-sensor features:", ["dp","corr","phase"], default=["corr"])
+    selected_slug = st.multiselect("Slugging features:",
+        ["peak_count","peak_rate","crest_factor","peak_to_mean","zero_cross"],
+        default=["peak_count","peak_rate"])
 
-    # ======================
-    # process_dataframe
-    # ======================
+    # =====================================================
+    # 🪟 Sliding Window Options
+    # =====================================================
+    st.markdown("### 🪟 Sliding Window Options")
+    use_sliding = st.radio("Apply Sliding Window?", ["No - Use Entire Signal", "Yes - Apply Sliding Windows"], index=0)
+    if use_sliding == "Yes - Apply Sliding Windows":
+        fs = st.number_input("Sampling frequency (Hz)", min_value=1, value=100)
+        window_size = st.number_input("Window size (seconds)", min_value=1, value=2)
+        overlap_pct = st.slider("Overlap (%)", 0, 90, 50)
+        overlap = overlap_pct / 100
+    else:
+        fs, window_size, overlap = None, None, None
+
+    apply_signal_zero = st.checkbox("Apply Signal Zero adjustment", value=False)
+    indicator_choice = st.radio("Select indicator:", [1, 0, "both"], index=0)
+    remove_blocks = st.selectbox("Remove trailing blocks (2048 samples)", ["None", "Auto-adjust to uniform signal length"])
+
+    # =====================================================
+    # 🧠 Inner helper for dataframe processing
+    # =====================================================
     def process_dataframe(df, filename, auto_trim_size=None, zero_means=None):
-        original_size = len(df)
-
-        # filter indicator
-        if indicator_choice != "both":
+        usable_targets = selected_targets if selected_targets else [
+            c for c in df.columns if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql", "qw"])
+        ]
+        if "indicator" in df.columns and indicator_choice != "both":
             df = df[df["indicator"] == int(indicator_choice)]
-            original_size_after_ind = len(df)
-        filtered_size = len(df)
+        if df.empty:
+            return [], 0, 0, 0
 
-        trimmed_size = filtered_size
+        target_fn = np.median if target_method == "Median" else np.mean
+        original_size = len(df)
+        trimmed_size = len(df)
         blocks_removed = 0
-
-        if auto_trim_size is not None and filtered_size > auto_trim_size:
+        if auto_trim_size and len(df) > auto_trim_size:
             df = df.iloc[:auto_trim_size]
             trimmed_size = len(df)
-            blocks_removed = (filtered_size - trimmed_size) // 2048
-        else:
-            trimmed_size = filtered_size
+            blocks_removed = (original_size - trimmed_size) // 2048
 
-        # --- Choose target function ---
-        target_fn = np.median if target_method == "Median" else np.mean
-
-        # --- Whole signal ---
+        # --- No Sliding ---
         if use_sliding == "No - Use Entire Signal":
             feats = extract_features(df, selected_time, selected_freq, selected_cross, selected_slug, selected_sensors)
-
-            # Adjust Sensor1 & Sensor2 means if option is enabled
             if zero_means and "mean" in selected_time:
-                if "TIME_Sensor1_mean" in feats:
-                    feats["TIME_Sensor1_mean"] -= zero_means.get("Sensor1", 0.0)
-                if "TIME_Sensor2_mean" in feats:
-                    feats["TIME_Sensor2_mean"] -= zero_means.get("Sensor2", 0.0)
+                for s in zero_means:
+                    k = f"TIME_{s}_mean"
+                    if k in feats:
+                        feats[k] -= zero_means[s]
+            row = {"Filename": filename}
+            for t in usable_targets:
+                row[f"{t}_target"] = target_fn(df[t].dropna())
+            row.update(feats)
+            return [row], original_size, trimmed_size, blocks_removed
 
-            row = {
-                "Filename": filename,
-                "CRL_target": target_fn(df["CRL"]),
-                "AliCat_target": target_fn(df["AliCat"]),
-                **feats
-            }
-            return [row], original_size_after_ind, trimmed_size, blocks_removed
-
-        # --- Sliding windows ---
+        # --- Sliding ---
         else:
-            win_list = sliding_window(df, window_size, overlap, fs)
+            size = int(window_size * fs)
+            step = int(size * (1 - overlap))
+            starts = range(0, max(len(df)-size+1, 0), step)
             rows = []
-            for i, win in enumerate(win_list):
+            for i, s in enumerate(starts):
+                win = df.iloc[s:s+size]
                 feats = extract_features(win, selected_time, selected_freq, selected_cross, selected_slug, selected_sensors)
-
-                # Adjust Sensor1 & Sensor2 means if option is enabled
                 if zero_means and "mean" in selected_time:
-                    if "TIME_Sensor1_mean" in feats:
-                        feats["TIME_Sensor1_mean"] -= zero_means.get("Sensor1", 0.0)
-                    if "TIME_Sensor2_mean" in feats:
-                        feats["TIME_Sensor2_mean"] -= zero_means.get("Sensor2", 0.0)
-
-                row = {
-                    "Filename": filename,
-                    "Window": i,
-                    "CRL_target": target_fn(win["CRL"]),
-                    "AliCat_target": target_fn(win["AliCat"]),
-                    **feats
-                }
+                    for k,v in zero_means.items():
+                        key = f"TIME_{k}_mean"
+                        if key in feats:
+                            feats[key] -= v
+                row = {"Filename": filename, "Window": i}
+                for t in usable_targets:
+                    row[f"{t}_target"] = target_fn(win[t].dropna())
+                row.update(feats)
                 rows.append(row)
-            return rows, original_size_after_ind, trimmed_size, blocks_removed
+            return rows, original_size, trimmed_size, blocks_removed
 
-
-    # ======================
-    # Auto-trim Size Detection
-    # ======================
+    # =====================================================
+    # 🚀 Generate Dataset (Local or Upload)
+    # =====================================================
     auto_trim_size = None
-    folder_path = None
 
-    if option == "Local folder":
-        folder_path = st.text_input("Enter LOCAL folder path containing CSV files:")
-        if folder_path and os.path.isdir(folder_path) and remove_blocks == "Automatically Fix to same size signal":
-            sample_sizes = []
-            check_files = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".csv")][:4]
-
-            for f in check_files:
-                try:
-                    df_tmp = pd.read_csv(f)
-                    if indicator_choice != "both":
-                        df_tmp = df_tmp[df_tmp["indicator"] == int(indicator_choice)]
-                    sample_sizes.append(len(df_tmp))
-                except Exception:
-                    continue
-
-            if sample_sizes:
-                block = 2048
-                auto_trim_size = (min(sample_sizes) // block) * block
-                st.info(f"📏 Auto-trim detected minimum size (after indicator filter): {auto_trim_size} rows")
-
-
-    # ======================
-    # Local folder processing
-    # ======================
-    if option == "Local folder":
-        if st.button("⏵ Generate from Local Folder"):
-            if folder_path and os.path.isdir(folder_path):
-                # ✅ compute Signal Zero once (not for every file)
-                zero_means = None
-                if apply_signal_zero and folder_path and os.path.isdir(folder_path):
-                    zero_means = get_signal_zero_means(folder_path, indicator_choice, auto_trim_size)
-                with st.expander("**💻 Output logs:**", expanded=False):
-                    for file in os.listdir(folder_path):
-                        if file.endswith(".csv"):
-                            try:
-                                df = pd.read_csv(os.path.join(folder_path, file))
-
-                                # ✅ pass zero_means into process_dataframe
-                                out, orig_size_after_ind, trimmed_size, blocks_removed = process_dataframe(
-                                    df, file, auto_trim_size, zero_means
-                                )
-
-                                if out:
-                                    results.extend(out)
-                                    st.success(
-                                        f"✅ Processed {file} - original size: **{orig_size_after_ind}**, "
-                                        f"trimmed size: **{trimmed_size}**, block removed (2048): **{blocks_removed}**"
-                                    )
-
-                            except Exception as e:
-                                st.error(f"⚠️ Error in {file}: {e}")
-            else:
-                st.error(f"⚠️ Please select the source path")
-    # ======================
-    # Uploaded file processing
-    # ======================
-    else:
-        uploaded_files = st.file_uploader("Upload CSVs", type="csv", accept_multiple_files=True)
-        if uploaded_files and st.button("Generate from Uploaded Files"):
-            st.info(f"📂 {len(uploaded_files)} file(s) uploaded")
-            zero_means = None
-            if apply_signal_zero and folder_path and os.path.isdir(folder_path):
-                zero_means = get_signal_zero_means(folder_path, indicator_choice, auto_trim_size)
-            with st.expander("**💻 Output logs:**", expanded=False):
-                for f in uploaded_files:
+    if option == "Local Folder":
+        if folder_path and os.path.isdir(folder_path):
+            if remove_blocks == "Auto-adjust to uniform signal length":
+                csvs = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".csv")]
+                sizes = []
+                for f in csvs[:4]:
                     try:
-                        df = pd.read_csv(f)
-                        out, orig_size_after_ind, trimmed_size, blocks_removed = process_dataframe(
-                                        df, f.name, auto_trim_size, zero_means
-                                    )
-                        if out:
-                            results.extend(out)
-                            st.success(
-                                f"✅ Processed {f.name} - original size: **{orig_size_after_ind}**, "
-                                f"trimmed size: **{trimmed_size}**, block removed (2048): **{blocks_removed}**"
-                            )           
-                    except Exception as e:
-                        st.error(f"⚠️ Error in {f.name}: {e}")
+                        df_tmp = pd.read_csv(f)
+                        if "indicator" in df_tmp.columns and indicator_choice != "both":
+                            df_tmp = df_tmp[df_tmp["indicator"] == int(indicator_choice)]
+                        sizes.append(len(df_tmp))
+                    except:
+                        pass
+                if sizes:
+                    block = 2048
+                    auto_trim_size = (min(sizes) // block) * block
+                    st.info(f"📏 Auto-trim detected: {auto_trim_size} rows")
 
-    # ======================
-    # Save / Show results
-    # ======================
+        if st.button("⏵ Generate from Local Folder"):
+            if not folder_path or not os.path.isdir(folder_path):
+                st.error("⚠️ Invalid folder path.")
+            else:
+                zero_means = get_signal_zero_means(folder_path, indicator_choice, auto_trim_size, selected_sensors) if apply_signal_zero else None
+                files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
+                total = len(files)
+                pb = st.progress(0)
+
+                status_text = st.empty()  # placeholder for dynamic status messages
+                for i, file in enumerate(files, 1):
+                    df = pd.read_csv(os.path.join(folder_path, file))
+
+                    # Show dynamic status
+                    status_text.info(
+                        f"🔄 Processing file **{i}/{total}**: **{file}** — "
+                        f"size {df.shape}, window size: {window_size if window_size else 'full'}s, "
+                        f"overlap: {int(overlap*100) if overlap else 0}%"
+                    )
+
+                    # Process data
+                    out, _, _, _ = process_dataframe(df, file, auto_trim_size, zero_means)
+                    if out:
+                        results.extend(out)
+
+                    # Update progress bar
+                    pb.progress(i / total)
+                    time.sleep(0.1)  # optional small delay for smoother UI feedback
+
+                status_text.success("✅ All files processed successfully!")
+
+
+    else:  # Uploaded files
+        if uploaded_files and st.button("Generate from Uploaded Files"):
+            for f in uploaded_files:
+                df = pd.read_csv(f)
+                out, _, _, _ = process_dataframe(df, f.name)
+                if out:
+                    results.extend(out)
+            st.success("✅ All uploaded files processed!")
+
+    # =====================================================
+    # 💾 Export Results
+    # =====================================================
     if results:
         output_df = pd.DataFrame(results)
+        st.markdown("### 📦 Final Dataset")
         st.dataframe(output_df)
-        csv_bytes = output_df.to_csv(index=False).encode("utf-8")
-        st.download_button("⬇️ Download Dataset", csv_bytes, "dataset_with_features.csv", "text/csv")
+        csv_data = output_df.to_csv(index=False).encode("utf-8")
+        filename = f"ML_dataset_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+        st.download_button("⬇️ Download CSV", data=csv_data, file_name=filename, mime="text/csv")
+
+    if st.session_state.results and st.button("🗑️ Clear Results"):
+        st.session_state.results = []
+        st.rerun()

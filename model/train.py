@@ -14,6 +14,7 @@ def show_ML_model_page():
     from sklearn.pipeline import Pipeline
     from sklearn.gaussian_process import GaussianProcessRegressor
     from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+    import os
 
     # ================================
     # Utility Functions
@@ -25,16 +26,16 @@ def show_ML_model_page():
         rmse = np.sqrt(mean_squared_error(y_true, y_pred))
         mae = mean_absolute_error(y_true, y_pred)
 
-        plt.figure(figsize=(7, 7))
+        plt.figure(figsize=(5, 5))
         max_val = np.max(np.concatenate([y_true, y_pred]))
         min_val = 0
 
         plt.scatter(y_true, y_pred, c=color, edgecolors='black',
                     marker='o' if "Train" in dataset_type else 'v', alpha=0.7)
 
-        plt.plot([min_val, max_val], [min_val, max_val], 'k--', label='100% agreement')
-        plt.plot([min_val, max_val], [min_val, 1.2 * max_val], 'r--', linewidth=1, label='+20%')
-        plt.plot([min_val, max_val], [min_val, 0.8 * max_val], 'r--', linewidth=1, label='-20%')
+        plt.plot([min_val, max_val], [min_val, max_val], 'k--')
+        plt.plot([min_val, max_val], [min_val, 1.2 * max_val], 'r--', linewidth=1, label='20% Error')
+        plt.plot([min_val, max_val], [min_val, 0.8 * max_val], 'r--', linewidth=1)
 
         plt.xlim(min_val, max_val)
         plt.ylim(min_val, max_val)
@@ -42,7 +43,7 @@ def show_ML_model_page():
         plt.ylabel("Predicted " + target)
         plt.title(f"{model_name} - {dataset_type} Set")
 
-        plt.legend(title=f"{dataset_type}:\nR²={r2:.2f}, RMSE={rmse:.2f}, MAE={mae:.2f}")
+        plt.legend(title=f"{dataset_type}:\nR²={r2:.2f} & MAE={mae:.2f}")
         plt.tight_layout()
         st.pyplot(plt.gcf())
         plt.close()
@@ -91,38 +92,35 @@ def show_ML_model_page():
             ax_main.plot(line_x, line_y, color='red', linestyle='--',
                         linewidth=2, label=f'R² = {r2:.2f}')
             ax_main.legend(loc='upper center')
-            ax_main.set_xlabel(col, fontsize=11)
-            ax_main.set_ylabel(target_col, fontsize=11)
+            ax_main.set_xlabel(col, fontsize=8)
+            ax_main.set_ylabel(target_col, fontsize=8)
 
             ax_xhist.hist(x, bins=15, color='green', edgecolor='black')
-    
+
             ax_yhist.hist(y, bins=15, orientation='horizontal',
                         color='green', edgecolor='black')
-    
+
 
             plots.append(fig)
 
         return plots
 
     # ================================
-    # Streamlit App
+    # Streamlit GUI App
     # ================================
-    #st.title("MLCan Simple AI")
-
-    # -------------------------------
-    # Page UI
-    # -------------------------------
-    uploaded_file = st.file_uploader("Upload your file (csv)", type=["csv"])
+    st.title("🟪 Ensemble Learning Models")
+    st.divider()
+    st.header("📁 Import Dataset")
+    uploaded_file = st.file_uploader("► Upload your file (csv)", type=["csv"])
 
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-
-        st.header("1. Select Features and Target")
-        with st.expander("Column Selection"):
-            cols = df.columns.tolist()
-            selected_features = st.multiselect("Select Feature Columns", options=cols)
-            selected_target = st.selectbox("Select Target Column",
-                                        options=[col for col in cols if col not in selected_features])
+        st.divider()
+        st.header("① Select Features & Target")
+        cols = df.columns.tolist()
+        selected_features = st.multiselect("► Select **Features**", options=cols)
+        selected_target = st.selectbox("► Select **Target**",
+                                    options=[col for col in cols if col not in selected_features])
 
         if selected_features and selected_target:
             # Subset dataframe
@@ -138,7 +136,7 @@ def show_ML_model_page():
             cleaned_size = df_clean.shape[0]
 
             # Report to Streamlit
-            st.info(f"🧹 Data cleaned: Original size = {original_size}, Cleaned size = {cleaned_size}")
+            st.info(f"🧹 Data cleaned (NAN & Dulpicattion removal): Original size = **{original_size}**, Cleaned size = **{cleaned_size}**")
 
             # Update X and y AFTER cleaning
             X = df_clean[selected_features]
@@ -148,20 +146,21 @@ def show_ML_model_page():
                 st.error("❌ Target column still has NaN values after cleaning!")
                 st.stop()
             # ================= EDA =================
-            st.header("2. Exploratory Data Analysis")
-            with st.expander("Show/hide EDA", expanded=True):
-                st.subheader("2.1 Summary Statistics")
+            st.divider()
+            with st.expander("📊 EDA (Show/Hide)", expanded=False):
+                st.subheader("🟢 Exploratory Data Analysis (EDA)")
+                st.markdown("#### 🟣 Summary of Statistics")
                 summary = df[selected_features + [selected_target]].describe().T
                 summary['skew'] = df[selected_features + [selected_target]].skew()
                 summary['kurtosis'] = df[selected_features + [selected_target]].kurtosis()
                 st.dataframe(summary.round(3))
 
-                st.subheader("2.2 Scatter Plots + Histograms")
+                st.markdown("#### 🟣 Scatter Plots + Histograms")
                 plots = plot_pairwise_corr_with_hist(df[selected_features + [selected_target]], selected_target)
                 for fig in plots:
                     st.pyplot(fig)
 
-                st.subheader("2.3 Correlation Heatmap")
+                st.markdown("#### 🟣 Correlation Heatmap")
                 corr = df[selected_features + [selected_target]].corr()
                 mask = np.triu(np.ones_like(corr, dtype=bool))
                 fig, ax = plt.subplots(figsize=(10, 8))
@@ -169,13 +168,15 @@ def show_ML_model_page():
                             cmap="coolwarm", cbar=True, ax=ax,
                             square=True, linewidths=0.5,
                             annot_kws={"size": 9})
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="left")
-                ax.xaxis.set_ticks_position('top')
-                ax.xaxis.set_label_position('top')
+                #ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="left")
+                #ax.xaxis.set_ticks_position('bottom')
+                #ax.xaxis.set_label_position('bottom')
                 st.pyplot(fig)
 
             # ================= Model =================
-            st.header("3. Model Training and Evaluation")
+            #with st.container(border=True):
+            st.divider()
+            st.header("② Model Training and Evaluation")
             model_choice = st.radio("Select Model", ["Random Forest", "XGBoost", "GPR"])
             eval_method = st.radio("Evaluation Method", ["Train-Test Split", "K-Fold Cross-Validation"])
 
@@ -190,6 +191,7 @@ def show_ML_model_page():
             
 
             final_model = None
+
 
             if eval_method == "Train-Test Split":
                 test_size = st.slider("Test Size (%)", 10, 50, 25) / 100
@@ -220,8 +222,93 @@ def show_ML_model_page():
                 plot_predicted_vs_measured_separately(y_train, y_train_pred, "Train", model_choice, selected_target)
                 st.markdown("##### 🟠 Testing Set")
                 plot_predicted_vs_measured_separately(y_test, y_test_pred, "Test", model_choice, selected_target)
-
                 final_model = pipeline
+
+
+                # --- Optional diagnostic plots (test set only) ---
+                st.markdown("### Optional Performance Plots")
+                with st.expander("Show / Hide Performance Plots", expanded=False):
+                    show_tracking = st.checkbox("1️⃣ Prediction Tracking (with Mean Lines)")
+                    show_error_mean_std = st.checkbox("2️⃣ Prediction Error with Mean ± STD")  
+                    show_residuals_pred = st.checkbox("3️⃣ Residuals vs Predicted")
+                    show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)")
+                    show_feat_import = st.checkbox("5️⃣ Feature Importance")
+                    show_abs_err = st.checkbox("6️⃣ Error Magnitude (Absolute Error)")
+                    
+                    # ===== 1️⃣ Prediction Tracking (with Mean Lines) =====
+                    if show_tracking:
+                        fig, ax = plt.subplots(figsize=(10,5))
+                        ax.plot(y_test.values, label="True Signal", color='teal', linewidth=2)
+                        ax.plot(y_test_pred, label="Predicted Signal", color='orange', linestyle='--', linewidth=2)
+
+                        # ✅ Mean lines
+                        mean_true = np.mean(y_test.values)
+                        mean_pred = np.mean(y_test_pred)
+                        ax.axhline(mean_true, color='teal', linestyle=':', linewidth=1.5, label=f"Mean True = {mean_true:.2f}")
+                        ax.axhline(mean_pred, color='orange', linestyle=':', linewidth=1.5, label=f"Mean Pred = {mean_pred:.2f}")
+
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel(selected_target)
+                        ax.set_title("True vs. Predicted Signal (with Mean Lines)")
+                        ax.legend()
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+
+                    # ===== 2️⃣ Prediction Error with Mean ± STD =====
+                    if show_error_mean_std:
+                        error_signal = y_test_pred - y_test.values
+                        mean_error = np.mean(error_signal)
+                        std_error = np.std(error_signal)
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        ax.plot(error_signal, label="Error (Pred - True)", color='red', alpha=0.6)
+                        ax.axhline(mean_error, color='blue', linestyle='--', linewidth=2, label=f"Mean Error = {mean_error:.4f}")
+                        ax.axhline(0, color='black', linestyle=':', linewidth=1)
+                        ax.fill_between(range(len(error_signal)),
+                                        mean_error - std_error,
+                                        mean_error + std_error,
+                                        color='blue', alpha=0.1,
+                                        label=f"±1 STD ({std_error:.4f})")
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel("Error (Pred - True)")
+                        ax.set_title("Prediction Error with Mean ± STD")
+                        ax.legend()
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # ===== 3️⃣ Residuals vs Predicted =====
+                    if show_residuals_pred:
+                        residuals = y_test_pred - y_test.values
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        ax.scatter(y_test_pred, residuals, color="purple", alpha=0.6)
+                        ax.axhline(0, color="black", linestyle="--")
+                        ax.set_xlabel("Predicted"); ax.set_ylabel("Residuals")
+                        ax.set_title("Residuals vs Predicted")
+                        st.pyplot(fig); plt.close(fig)
+
+                    # ===== 4️⃣ Residual Distribution =====
+                    if show_residual_dist:
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        sns.histplot(residuals, kde=True, bins=25, color="orange", ax=ax)
+                        ax.set_title("Residual Distribution (Histogram + KDE)")
+                        st.pyplot(fig); plt.close(fig)
+
+                    # ===== 5️⃣ Feature Importance =====
+                    if show_feat_import and hasattr(final_model["model"], "feature_importances_"):
+                        imp = final_model["model"].feature_importances_
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        pd.Series(imp, index=selected_features).sort_values().plot.barh(ax=ax, color="teal")
+                        ax.set_title("Feature Importance")
+                        st.pyplot(fig); plt.close(fig)
+
+                    # ===== 6️⃣ Absolute Error =====
+                    if show_abs_err:
+                        abs_err = np.abs(y_test_pred - y_test.values)
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        ax.plot(abs_err, color="red", alpha=0.7)
+                        ax.set_title("Absolute Error per Sample")
+                        ax.set_xlabel("Sample Index"); ax.set_ylabel("|Error|")
+                        st.pyplot(fig); plt.close(fig)
 
             else:  # K-Fold CV
                 k = st.slider("Number of Folds (K)", 2, 10, 5)
@@ -278,42 +365,124 @@ def show_ML_model_page():
                 ])
                 final_model.fit(X, y)
 
-            # ================= Interpretation =================
-            st.header("4. Model Interpretation")
+            # ==================================================
+            #                   Interpretation  
+            # ==================================================
+            st.divider()
+            st.header("③ Model Interpretation")
             show_shap = st.checkbox("4.1 Show SHAP Plots")
+
             if show_shap and final_model:
-                with st.expander("SHAP Waterfall + Beeswarm Plots"):
-                    try:
-                        # Keep track of original feature names
-                        feature_names = selected_features
+                try:
+                    feature_names = selected_features
 
-                        # Transform X using scaler
-                        X_scaled = final_model["scaler"].transform(X)
+                    # Scale X and create explainer
+                    X_scaled = final_model["scaler"].transform(X)
+                    explainer = shap.Explainer(
+                        final_model["model"],
+                        X_scaled,
+                        feature_names=feature_names
+                    )
+                    shap_values = explainer(X_scaled, check_additivity=False)
 
-                        # Create explainer with feature names
-                        explainer = shap.Explainer(
-                            final_model["model"],
-                            X_scaled,
-                            feature_names=feature_names
+                    # --- User selects which SHAP visualization to show ---
+                    st.markdown("### Choose SHAP Plot Type")
+                    shap_plot_type = st.radio(
+                        "Select visualization type:",
+                        [
+                            "1️⃣ Waterfall Plot",
+                            "2️⃣ Force Plot",
+                            "3️⃣ Summary / Beeswarm Plot",
+                            "4️⃣ Dependence Plot",
+                            "5️⃣ Bar Plot (Feature Importance)"
+                        ],
+                        horizontal=False
+                    )
+
+                    # ---------------------------
+                    # 1️⃣ Waterfall Plot
+                    # ---------------------------
+                    if "Waterfall" in shap_plot_type:
+                        st.info(
+                            "💧 **Waterfall Plot:** Shows how each feature pushes an individual prediction "
+                            "from the baseline value to the final prediction."
                         )
-                        shap_values = explainer(X_scaled, check_additivity=False)
+                        idx = st.number_input("Select sample index", 0, len(X) - 1, 0)
+                        fig = plt.figure()
+                        shap.plots.waterfall(shap_values[idx], show=False)
+                        st.pyplot(fig)
+                        plt.close()
 
-                        # Beeswarm plot with correct feature names
+                    # ---------------------------
+                    # 2️⃣ Force Plot
+                    # ---------------------------
+                    elif "Force" in shap_plot_type:
+                        st.info(
+                            "🧭 **Force Plot:** Compact version of the waterfall plot, showing features "
+                            "as arrows pushing toward higher or lower predictions."
+                        )
+                        idx = st.number_input("Select sample index", 0, len(X) - 1, 0, key="force_idx")
+                        st_shap = shap.plots.force(shap_values[idx], matplotlib=True, show=False)
+                        st.pyplot(st_shap)
+
+                    # ---------------------------
+                    # 3️⃣ Summary / Beeswarm Plot
+                    # ---------------------------
+                    elif "Summary" in shap_plot_type:
+                        st.info(
+                            "🐝 **Beeswarm Plot:** Displays feature importance and the effect of feature "
+                            "values across all samples."
+                        )
                         fig = plt.figure()
                         shap.plots.beeswarm(shap_values, show=False)
                         st.pyplot(fig)
+                        plt.close()
 
-                        # Optional: Waterfall plot for the first sample
-                        fig = plt.figure()
-                        shap.plots.waterfall(shap_values[0], show=False)
+                    # ---------------------------
+                    # 4️⃣ Dependence Plot
+                    # ---------------------------
+                    elif "Dependence" in shap_plot_type:
+                        st.info(
+                            "📈 **Dependence Plot:** Shows how a single feature’s value impacts its SHAP "
+                            "contribution. Useful for detecting non-linear or interaction effects."
+                        )
+
+                        selected_feat = st.selectbox("Select feature", feature_names)
+                        fig, ax = plt.subplots(figsize=(7, 5))
+
+                        # shap.dependence_plot writes directly to the current axes
+                        shap.dependence_plot(
+                            selected_feat,
+                            shap_values.values,
+                            X,
+                            feature_names=feature_names,
+                            interaction_index=None,
+                            ax=ax,
+                            show=False
+                        )
                         st.pyplot(fig)
+                        plt.close(fig)
 
-                    except Exception as e:
-                        st.warning(f"SHAP failed: {e}")
+                    # ---------------------------
+                    # 5️⃣ Bar Plot
+                    # ---------------------------
+                    elif "Bar Plot" in shap_plot_type:
+                        st.info(
+                            "📊 **Bar Plot:** Displays the average absolute SHAP value for each feature, "
+                            "indicating overall feature importance."
+                        )
+                        fig = plt.figure()
+                        shap.plots.bar(shap_values, show=False)
+                        st.pyplot(fig)
+                        plt.close()
+
+                except Exception as e:
+                    st.warning(f"⚠️ SHAP visualization failed: {e}")
 
 
             # ================= New Dataset =================
-            st.header("5. Test Final Model")
+            st.divider()
+            st.header("④ Test Final Model")
 
             if final_model:
                 test_mode = st.radio(
@@ -345,12 +514,33 @@ def show_ML_model_page():
                                 index=[new_data_file.name]
                             )
                             st.subheader("Performance on New Dataset")
-                            st.dataframe(metrics_df.round(4))
-                            st.text("Predicted Target:")
-                            st.dataframe(new_y_pred)
+                            # --- Compute mean comparison metrics ---
+                            mean_true = np.mean(new_y_true)
+                            mean_pred = np.mean(new_y_pred)
+                            mean_diff = mean_pred - mean_true
+                            error_percent = (mean_diff / mean_true) * 100
 
+                            # --- Add new columns to metrics_df ---
+                            metrics_df["Error_Mean"] = error_percent
+                            metrics_df["Mean_True"] = mean_true
+                            metrics_df["Mean_Predicted"] = mean_pred
+                            
+
+                            # --- Display all metrics in one row ---
+                            st.dataframe(metrics_df.round(4))
+ 
+                            
+                            show_signal_plot = st.checkbox("Visualize predicted vs. true signal and mean error line (for new dataset)")
+                            if show_signal_plot:
+                                fig, ax = plt.subplots(figsize=(8,3))
+                                ax.plot(new_y_true, label="True", color="teal")
+                                ax.plot(new_y_pred, label="Pred", color="orange", linestyle="--")
+                                mean_err = np.mean(new_y_pred - new_y_true)
+                                ax.axhline(mean_err, color="blue", linestyle="--", label=f"Mean Error = {mean_err:.3f}")
+                                ax.legend(); ax.set_title("True vs Predicted Signal with Mean Error Line")
+                                st.pyplot(fig); plt.close(fig)
+                                
                             # Plot
-                            import os
                             file_label = os.path.splitext(new_data_file.name)[0]
                             st.subheader("Predicted vs. Measured (New Dataset)")
                             plot_predicted_vs_measured_separately(
@@ -360,7 +550,88 @@ def show_ML_model_page():
                                 model_choice,
                                 selected_target
                             )
-                    
+
+                            # --- Optional diagnostic plots for new dataset ---
+                            st.markdown("### Optional Diagnostic Plots (New Dataset)")
+                            with st.expander("Show / Hide Diagnostic Plots", expanded=False):
+                                show_tracking = st.checkbox("1️⃣ Prediction Tracking (with Mean Lines)", key="new_tracking")
+                                show_error_mean_std = st.checkbox("2️⃣ Prediction Error with Mean ± STD", key="new_err_meanstd")
+                                show_residuals_pred = st.checkbox("3️⃣ Residuals vs Predicted", key="new_resid_pred")
+                                show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)", key="new_resid_dist")
+                                show_abs_err = st.checkbox("5️⃣ Error Magnitude (Absolute Error)", key="new_abs_err")
+
+                                # --- common residuals and errors ---
+                                residuals = new_y_pred - new_y_true
+                                abs_err = np.abs(residuals)
+                                mean_true = np.mean(new_y_true)
+                                mean_pred = np.mean(new_y_pred)
+                                mean_error = np.mean(residuals)
+                                std_error = np.std(residuals)
+
+                                # ===== 1️⃣ Prediction Tracking (with Mean Lines) =====
+                                if show_tracking:
+                                    fig, ax = plt.subplots(figsize=(10,5))
+                                    ax.plot(new_y_true, label="True Signal", color='teal', linewidth=2)
+                                    ax.plot(new_y_pred, label="Predicted Signal", color='orange', linestyle='--', linewidth=2)
+                                    ax.axhline(mean_true, color='teal', linestyle=':', linewidth=1.5, label=f"Mean True = {mean_true:.2f}")
+                                    ax.axhline(mean_pred, color='orange', linestyle=':', linewidth=1.5, label=f"Mean Pred = {mean_pred:.2f}")
+                                    ax.set_xlabel("Sample Index")
+                                    ax.set_ylabel(selected_target)
+                                    ax.set_title("True vs. Predicted Signal (with Mean Lines)")
+                                    ax.legend()
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+
+                                # ===== 6️⃣ Prediction Error with Mean ± STD =====
+                                if show_error_mean_std:
+                                    fig, ax = plt.subplots(figsize=(10,4))
+                                    ax.plot(residuals, label="Error (Pred - True)", color='red', alpha=0.6)
+                                    ax.axhline(mean_error, color='blue', linestyle='--', linewidth=2, label=f"Mean Error = {mean_error:.4f}")
+                                    ax.axhline(0, color='black', linestyle=':', linewidth=1)
+                                    ax.fill_between(range(len(residuals)),
+                                                    mean_error - std_error,
+                                                    mean_error + std_error,
+                                                    color='blue', alpha=0.1,
+                                                    label=f"±1 STD ({std_error:.4f})")
+                                    ax.set_xlabel("Sample Index")
+                                    ax.set_ylabel("Error (Pred - True)")
+                                    ax.set_title("Prediction Error with Mean ± STD")
+                                    ax.legend()
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+
+                                # ===== 2️⃣ Residuals vs Predicted =====
+                                if show_residuals_pred:
+                                    fig, ax = plt.subplots(figsize=(10,4))
+                                    ax.scatter(new_y_pred, residuals, color="purple", alpha=0.6)
+                                    ax.axhline(0, color="black", linestyle="--")
+                                    ax.set_xlabel("Predicted")
+                                    ax.set_ylabel("Residuals")
+                                    ax.set_title("Residuals vs Predicted")
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+
+                                # ===== 3️⃣ Residual Distribution =====
+                                if show_residual_dist:
+                                    fig, ax = plt.subplots(figsize=(10,4))
+                                    sns.histplot(residuals, kde=True, bins=25, color="orange", ax=ax)
+                                    ax.set_title("Residual Distribution (Histogram + KDE)")
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+
+                                # ===== 4️⃣ Absolute Error =====
+                                if show_abs_err:
+                                    fig, ax = plt.subplots(figsize=(10,4))
+                                    ax.plot(abs_err, color="red", alpha=0.7)
+                                    ax.set_title("Absolute Error per Sample")
+                                    ax.set_xlabel("Sample Index")
+                                    ax.set_ylabel("|Error|")
+                                    st.pyplot(fig)
+                                    plt.close(fig)
+ 
+
+
+
                 # ---------------------------
                 # Option 2: Manual input
                 # ---------------------------
@@ -376,10 +647,3 @@ def show_ML_model_page():
                         sample_df = pd.DataFrame([sample_input])
                         pred = final_model.predict(sample_df)[0]
                         st.success(f"🎯 Predicted {selected_target}: **{pred:.4f}**")
-
-
-
-
-
-
-

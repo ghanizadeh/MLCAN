@@ -66,21 +66,19 @@ def process_csv_folder(source_folder, dest_folder=None, indicator=1):
 
             # 1. Keep only rows where indicator matches user choice
             #df = df[df['indicator'] == indicator]
-            
             if str(indicator).lower() != "both":
                 #df = df[df['indicator'].isin([0, 1])]
                 df = df[df['indicator'] == int(indicator)]
-
+ 
             
 
             # 2. Filter by AliCat and VFD values
-
             tol = 0.01
             df = df[
                 (abs(df['AliCat_Output'] - alicat_val) < tol) & 
-                (abs(df['VFD_Output'] - vfd_val) < tol)
+               (abs(df['VFD_Output'] - vfd_val) < tol)
             ]
-
+ 
             # 3. Apply calibration
             for column in ['Board1_I0', 'Board1_I1', 'Board1_I2', 'Board1_I3', 
                            'Board3_I0', 'Board3_I1', 'Board3_I2', 'Board3_I3']:

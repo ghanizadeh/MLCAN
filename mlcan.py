@@ -1,4 +1,5 @@
 import streamlit as st
+st.set_page_config(page_title="MLCAN", layout="wide")
 from streamlit_option_menu import option_menu
 import numpy as np
 import os
@@ -13,6 +14,7 @@ from utility.Olga_convertor import show_olga_convertor_page
 from utility.merge_datasets import show_merge_page
 from data_preprocessing.create_ml_dataset import show_create_ML_dataset
 from model.train import show_ML_model_page
+from model.tcn import show_TCN_model_page
 from model.model_window import show_RF_window_page
  
 
@@ -60,6 +62,18 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# Set page to wide mode but limit main content width
+st.markdown("""
+<style>
+/* Control main container width */
+.block-container {
+    max-width: 55%;      /* 👈 adjust between 75%–95% as you like */
+    padding-left: 3rem;
+    padding-right: 3rem;
+    margin: auto;
+}
+</style>
+""", unsafe_allow_html=True)
 # -----------------------------
 # Sidebar with tree-like menu
 # -----------------------------
@@ -89,7 +103,7 @@ with st.sidebar:
     if selected == "Extra Tools":
         submenu = option_menu(
             menu_title="Extra Tools",
-            options=["① Signal Builder", "② PvT-Sim Convertor", "③ Merge Datasets"],
+            options=["① Signal Segmentor", "② PvT-Sim Convertor", "③ Data Integration"],
             icons=["1", "2", "3"],
             menu_icon="gear",
             default_index=0,
@@ -97,7 +111,7 @@ with st.sidebar:
     elif selected == "② Models":
         submenu = option_menu(
             menu_title="Model",
-            options=["① Ensemble Learning (No window)", "② Ensemble Learning (with window)", "③ LSTM"],
+            options=["① Ensemble Learning", "② Adaptive Ensemble Learning", "③ TCN"],
             #icons=["play", "sliders", "check2-circle"],
             icons=["1","2","3"],
             menu_icon="diagram-3",
@@ -168,24 +182,28 @@ elif selected == "① Data Preprocessing":
     st.markdown("[Back to Top](#top)")
 
 elif selected == "Extra Tools":
-    st.title(f"⚙️ Extra Tools → {submenu}")
-    if submenu == "① Signal Builder":
+    #st.title(f"⚙️ Extra Tools → {submenu}")
+    if submenu == "① Signal Segmentor":
        show_signal_segmentor()
     elif submenu == "② PvT-Sim Convertor":
        show_olga_convertor_page()
-    elif submenu == "③ Merge Datasets":
+    elif submenu == "③ Data Integration":
        show_merge_page()
-
+    
 
 # ========================================================================================
 #  ML models
 # ========================================================================================
 elif selected == "② Models":
-    st.header(f"② Models → {submenu}")
-    if submenu == "① Ensemble Learning (No window)":
+    if submenu == "① Ensemble Learning":
         show_ML_model_page()
-    elif submenu == "② Ensemble Learning (with window)":
-        show_RF_window_page()
+    elif submenu == "② Adaptive Ensemble Learning":
+    #    show_RF_window_page()
+        st.title("In progress ...")
+    elif submenu == "③ TCN":
+        show_TCN_model_page()
+
+        
 
 
 elif selected == "Results":
