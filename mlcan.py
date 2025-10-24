@@ -67,7 +67,7 @@ st.markdown("""
 <style>
 /* Control main container width */
 .block-container {
-    max-width: 55%;      /* 👈 adjust between 75%–95% as you like */
+    max-width: 75%;      /* 👈 adjust between 75%–95% as you like */
     padding-left: 3rem;
     padding-right: 3rem;
     margin: auto;
@@ -214,3 +214,4 @@ elif selected == "Results":
         st.write("📈 Show plots here...")
     elif submenu == "SHAP":
         st.write("🔥 Show SHAP values here...")
+
