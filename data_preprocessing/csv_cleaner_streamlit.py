@@ -92,14 +92,16 @@ def process_csv_folder(source_folder, dest_folder=None, indicator=1):
             df.rename(columns={
                 'Board1_I0': 'Sensor5',
                 'Board1_I1': 'Sensor3',
-                'Board1_I2': 'Sensor1',
+                'Board1_I2': 'Sensor1_Temp',
                 'Board1_I3': 'CRL',
                 'Board3_I0': 'Sensor6',
                 'Board3_I1': 'Sensor4',
                 'Board3_I2': 'Sensor2',
                 'Board3_I3': 'AliCat'
             }, inplace=True)
-
+            # Convert -1 to 0
+            df = df.replace(-1, 0)
+            
             # Save
             base, ext = os.path.splitext(file_name)
             out_name = f"{base}_calibrated{ext}"     # add suffix before extension

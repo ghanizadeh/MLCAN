@@ -7,6 +7,19 @@ from scipy.fft import fft
 import streamlit as st
 import time
 
+def move_std_mean_to_front(df: pd.DataFrame) -> pd.DataFrame:
+    # Identify columns containing _std or _mean (case-insensitive)
+    priority_cols = [
+        col for col in df.columns
+        if "_std" in col.lower() or "_mean" in col.lower()
+    ]
+
+    # Remaining columns
+    other_cols = [col for col in df.columns if col not in priority_cols]
+
+    # Reorder dataframe
+    return df[priority_cols + other_cols]
+
 # =========================================================
 # 🧮 Feature Extractor
 # =========================================================
@@ -103,8 +116,11 @@ def show_create_ML_dataset():
     # =====================================================
     # 📂 Source Selection (first)
     # =====================================================
+    st.divider()
     st.markdown("### 📂 Select Source Data")
-    option = st.radio("Choose source:", ["Upload CSVs", "Local Folder"], index=0)
+    #option = st.radio("Choose source:", ["Upload CSVs", "Local Folder"], index=0)
+    option = st.radio("Choose source:", [ "Local Folder"], index=0)
+
     folder_path = None
     uploaded_files = []
 
@@ -116,6 +132,7 @@ def show_create_ML_dataset():
     # =====================================================
     # 🔍 Auto-detect Columns from first file
     # =====================================================
+    st.divider()
     st.markdown("### 📡 Select Sensors and Targets")
     uploaded_sample, folder_sample = None, None
     sample_df, sample_name = None, None
@@ -138,11 +155,12 @@ def show_create_ML_dataset():
         st.warning("⚠️ No file detected yet — please upload or enter a valid folder path.")
 
     possible_sensors = [c for c in numeric_cols if any(x in c.lower() for x in ["sensor", "pt-", "pressure"])]
-    possible_targets = [c for c in numeric_cols if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql", "qw", "qgst", "qost", "qwst"])]
+    possible_targets = [c for c in numeric_cols if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql","qo", "qw", "qgst", "qost", "qwst"])]
 
     selected_sensors = st.multiselect(
         "Select sensor columns:",
-        options=possible_sensors if possible_sensors else numeric_cols,
+        options= numeric_cols,
+        #options=possible_sensors if possible_sensors else numeric_cols,
         default=possible_sensors[:6] if len(possible_sensors) >= 6 else possible_sensors,
     )
 
@@ -157,6 +175,7 @@ def show_create_ML_dataset():
     # =====================================================
     # ⚙️ Feature Options
     # =====================================================
+    st.divider()
     st.markdown("### ⚙️ Feature Options")
     selected_time = st.multiselect("Time-domain features:",
         ["mean","std","min","max","median","range","skew","kurtosis","rms","p25","p75","iqr","cv","entropy"],
@@ -173,6 +192,7 @@ def show_create_ML_dataset():
     # =====================================================
     # 🪟 Sliding Window Options
     # =====================================================
+    st.divider()
     st.markdown("### 🪟 Sliding Window Options")
     use_sliding = st.radio("Apply Sliding Window?", ["No - Use Entire Signal", "Yes - Apply Sliding Windows"], index=0)
     if use_sliding == "Yes - Apply Sliding Windows":
@@ -192,7 +212,7 @@ def show_create_ML_dataset():
     # =====================================================
     def process_dataframe(df, filename, auto_trim_size=None, zero_means=None):
         usable_targets = selected_targets if selected_targets else [
-            c for c in df.columns if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql", "qw"])
+            c for c in df.columns if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql", "qw","qo", "qgst", "qost", "qwst"])
         ]
         if "indicator" in df.columns and indicator_choice != "both":
             df = df[df["indicator"] == int(indicator_choice)]
@@ -218,7 +238,8 @@ def show_create_ML_dataset():
                         feats[k] -= zero_means[s]
             row = {"Filename": filename}
             for t in usable_targets:
-                row[f"{t}_target"] = target_fn(df[t].dropna())
+                col = pd.to_numeric(df[t], errors="coerce").dropna()
+                row[f"{t}_target"] = target_fn(col) if not col.empty else np.nan
             row.update(feats)
             return [row], original_size, trimmed_size, blocks_removed
 
@@ -277,7 +298,38 @@ def show_create_ML_dataset():
 
                 status_text = st.empty()  # placeholder for dynamic status messages
                 for i, file in enumerate(files, 1):
-                    df = pd.read_csv(os.path.join(folder_path, file))
+                    #df = pd.read_csv(os.path.join(folder_path, file))
+                    file_path = os.path.join(folder_path, file)
+                    try:
+                        # Read first few lines to detect columns
+                        preview = pd.read_csv(file_path, nrows=10)
+                        expected_cols = len(preview.columns)
+
+                        # Stream-read in chunks
+                        chunks = []
+                        for chunk in pd.read_csv(file_path, chunksize=50000, low_memory=False):
+                            # Drop malformed rows with unexpected column counts
+                            if chunk.shape[1] == expected_cols:
+                                chunks.append(chunk)
+                        if chunks:
+                            df = pd.concat(chunks, ignore_index=True)
+                        else:
+                            st.warning(f"⚠️ Skipped {file} (no valid chunks)")
+                            continue
+
+                        # Optional dtype conversion to reduce memory
+                        df = df.convert_dtypes()
+
+                    except pd.errors.ParserError as e:
+                        st.warning(f"⚠️ Skipped {file} (parse error): {e}")
+                        continue
+                    except MemoryError:
+                        st.error(f"💥 Out of memory while reading {file}. Try reducing chunksize or file size.")
+                        continue
+                    except Exception as e:
+                        st.error(f"❌ Error reading {file}: {e}")
+                        continue
+
 
                     # Show dynamic status
                     status_text.info(
@@ -311,9 +363,12 @@ def show_create_ML_dataset():
     # 💾 Export Results
     # =====================================================
     if results:
+        st.success("✅ All uploaded files processed!")
         output_df = pd.DataFrame(results)
         st.markdown("### 📦 Final Dataset")
         st.dataframe(output_df)
+        output_df = move_std_mean_to_front(output_df)
+
         csv_data = output_df.to_csv(index=False).encode("utf-8")
         filename = f"ML_dataset_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         st.download_button("⬇️ Download CSV", data=csv_data, file_name=filename, mime="text/csv")

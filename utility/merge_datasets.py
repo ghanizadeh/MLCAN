@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import re
+import random
 
 # ============================================================
 # Memory-Safe Ordered Stream Merge (Single or Multi-Batch)
@@ -16,15 +17,59 @@ def merge_csv_files_to_disk(
     batch_mode=False,
     batch_size=3,
     dest_folder=None,
-    fs=100  # ✅ sampling frequency in Hz for time continuity
+    fs=100,
+    merge_mode="sorted"  # 🆕 NEW PARAMETER
 ):
-    """Merge large CSVs one-by-one directly into one or multiple CSVs without keeping all in RAM."""
+    """Merge CSVs sequentially or randomly with filename prefix rule."""
+
     summaries = []
 
+    # ------------------------------------------------------------
+    # 🧭 Sorting or Randomizing Files
+    # ------------------------------------------------------------
     def natural_key(s):
         return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", os.path.basename(s))]
-    file_list = sorted(file_list, key=natural_key)
+
+    if merge_mode == "sorted":
+        file_list = sorted(file_list, key=natural_key)
+        summaries.append("🔢 Files sorted in natural order.")
+    elif merge_mode == "random":
+        random.shuffle(file_list)
+        summaries.append("🎲 Files shuffled randomly before merging.")
+    else:
+        summaries.append("⚠️ Invalid merge_mode — defaulting to sorted.")
+        file_list = sorted(file_list, key=natural_key)
+
     total_files = len(file_list)
+
+    # ============================================================
+    # 🚫 Prevent consecutive same-prefix filenames
+    # ============================================================
+    def get_prefix(name):
+        base = os.path.basename(name)
+        return base.split("_")[0]  # e.g. "10001" from "10001_seg1_1s"
+
+    # Reorder to avoid consecutive same-prefix files
+    reordered_files = []
+    prev_prefix = None
+    remaining = file_list.copy()
+
+    while remaining:
+        found = False
+        for f in remaining:
+            prefix = get_prefix(f)
+            if prefix != prev_prefix:
+                reordered_files.append(f)
+                remaining.remove(f)
+                prev_prefix = prefix
+                found = True
+                break
+        if not found:  # If only same prefixes remain, just append them
+            reordered_files.extend(remaining)
+            break
+
+    file_list = reordered_files
+    summaries.append("🚫 Consecutive same-prefix filenames prevented.")
 
     if batch_mode and (not dest_folder or not os.path.isdir(dest_folder)):
         st.error("⚠️ Please specify a valid destination folder for batch merging.")
@@ -115,9 +160,31 @@ def merge_csv_files_to_disk(
                     rows_to_pick = int(rows_total * (percent / 100))
                     df = df.head(rows_to_pick)
 
-                    # ✅ Ensure Timestamp column exists
+                    # ✅ Ensure a Timestamp or equivalent exists
                     if "Timestamp" not in df.columns:
-                        raise ValueError(f"Missing 'Timestamp' column in {file_name}")
+                        # Create synthetic time using row index
+                        df["Timestamp"] = np.arange(len(df)) / fs
+                        summaries.append(f"🕒 {file_name}: No Timestamp column — generated synthetic time index.")
+                    else:
+                        # Detect and convert timestamp format automatically
+                        ts_sample = str(df["Timestamp"].dropna().iloc[0]) if df["Timestamp"].dropna().shape[0] > 0 else ""
+                        if re.match(r"^\d+(\.\d+)?$", ts_sample):
+                            df["Timestamp"] = pd.to_numeric(df["Timestamp"], errors="coerce")
+                        elif re.match(r"^\d{2}:\d{2}:\d{2}", ts_sample):
+                            df["Timestamp"] = pd.to_timedelta(df["Timestamp"]).dt.total_seconds()
+                        else:
+                            df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors="coerce")
+                            df["Timestamp"] = (df["Timestamp"] - df["Timestamp"].iloc[0]).dt.total_seconds()
+
+                    # ✅ Fill NaNs safely
+                    df["Timestamp"] = df["Timestamp"].interpolate(limit_direction="both").bfill().ffill()
+
+                    # ✅ Normalize to zero and apply cumulative offset
+                    first_valid = df["Timestamp"].iloc[0] if not pd.isna(df["Timestamp"].iloc[0]) else 0.0
+                    df["Timestamp"] = df["Timestamp"] - first_valid + time_offset
+
+                    # ✅ Update offset for next file
+                    time_offset = df["Timestamp"].iloc[-1] + (1 / fs)
 
                     # ✅ Detect and convert timestamp format automatically
                     ts_sample = str(df["Timestamp"].dropna().iloc[0]) if df["Timestamp"].dropna().shape[0] > 0 else ""
@@ -174,7 +241,7 @@ def merge_csv_files_to_disk(
 # Streamlit Page
 # ============================================================
 def show_merge_page():
-    st.title("🟫 Data Integration")
+
     
     with st.expander("ℹ️ **About This Tool**"):
         st.markdown("""
@@ -206,6 +273,13 @@ def show_merge_page():
         batch_size = st.number_input("🧩 Number of files per batch (X):", min_value=2, value=3, step=1)
         dest_folder = st.text_input("Destination folder for batch outputs:")
 
+    merge_mode = st.radio(
+        "Choose file merging order:",
+        ["🔢 Sorted by filename", "🎲 Random order"],
+        horizontal=True
+    )
+    merge_mode = "sorted" if "Sorted" in merge_mode else "random"
+
     output_path = st.text_input("Output file path (for single merge):", "merged_output.csv")
     summary = []
 
@@ -229,10 +303,14 @@ def show_merge_page():
                         batch_mode,
                         batch_size,
                         dest_folder,
+                        fs=100,
+                        merge_mode=merge_mode  # 🆕 added
                     )
+
                     if batch_mode:
                         st.success(f"✅ Batch merged CSVs written in: **{os.path.abspath(result)}**")
-                        st.dataframe(result)
+                        st.write(f"📁 Output folder: **{os.path.abspath(result)}**")
+
                     else:
                         st.success(f"✅ Merged CSV written to: **{os.path.abspath(result)}**")
             else:
@@ -250,6 +328,8 @@ def show_merge_page():
                 with open(tmp_path, "wb") as out:
                     out.write(f.read())
                 file_paths.append(tmp_path)
+
+            # ✅ Call merge once with the collected file paths
             result, summary = merge_csv_files_to_disk(
                 file_paths,
                 None,
@@ -259,10 +339,15 @@ def show_merge_page():
                 batch_mode,
                 batch_size,
                 dest_folder,
+                fs=100,
+                merge_mode=merge_mode
             )
+
+
             if batch_mode:
                 st.success(f"✅ Batch merged CSVs written in: **{os.path.abspath(result)}**")
-                st.dataframe(result)
+                st.write(f"📁 Output folder: **{os.path.abspath(result)}**")
+
             else:
                 st.success(f"✅ Merged CSV written to: **{os.path.abspath(result)}**")
 

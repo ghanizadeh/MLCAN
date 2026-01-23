@@ -46,8 +46,6 @@ def cut_signal(df, start_time, duration, indicator_choice, filename, freq=None, 
 # 🎛️ Main Streamlit App
 # =========================================================
 def show_signal_segmentor():
-    st.title("Signal Segmentor")
-    st.markdown("---")
     # Choose folder
     with st.container(border=True):
         folder_path = st.text_input("📁 Enter **Source path** (csv files)")
@@ -57,7 +55,7 @@ def show_signal_segmentor():
     with st.container(border=True):
         num_segments = st.number_input("**✂️ Number of Segments**", min_value=1, value=3)
  
-        segment_mode = st.radio("**⏰ Segment Duration Mode**", ["Fixed Duration", "Random Duration [x, y]"])
+        segment_mode = st.radio("**⏰ Segment Duration Mode**", ["Fixed Duration", "Random Duration [x, y]"],index=1)
  
         if segment_mode == "Fixed Duration":
             duration = st.number_input("**⏱ Each Segment Duration (seconds)**", min_value=1, value=10)
@@ -136,10 +134,14 @@ def show_signal_segmentor():
                             "PT-A4": "Sensor4",
                             "PT-A5": "Sensor5",
                             "PT-A6": "Sensor6",
-                            "wc-num": "Qw"
+                            "wc-num": "WC"
                     }
                     # Apply renaming
                     df.rename(columns=rename_map, inplace=True)
+                if "ql" and "wc" in df.columns.str.lower():
+                    df["Qw"] = df["Ql"] * df["WC"] / 100
+                    df["Qo"] = df["Ql"]  * (1 - df["WC"] / 100)
+ 
                 for seg in range(num_segments):
                     # Random duration per segment if enabled
                     if random_bounds:

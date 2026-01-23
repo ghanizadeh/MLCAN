@@ -5,15 +5,15 @@ from pathlib import Path
 
 
 # ============= Primary configs 
-WATERCUT = 90.0  # Water cut percentage
-STABILIZING_TIME = 0  # Stabilization time in seconds (time to wait before sampling)
-SAMPLINGWINDOW = 216000 # SAMPLINGWINDOW in Sconds (time to sample data after stabilization) 
+WATERCUT = 0.0  # Water cut percentage
+STABILIZING_TIME = 20  # Stabilization time in seconds (time to wait before sampling)
+SAMPLINGWINDOW = 60 # SAMPLINGWINDOW in Sconds (time to sample data after stabilization) 
 CALIBRATION = True  # Enable/disable calibration mode
-# ============= Excel (CSV) File path
-CSV_FILE_PATH = Path(r'/media/MLCanUser/STORE N GO/recording/test_0_1h_WC90/3phase_experiments.csv')
+# ============= Excel (CSV) File path-
+CSV_FILE_PATH = Path(r'/media/MLCanUser/Extreme SSD/pre-test/20251125_test7/WC0_PB_Part1.csv')
 # ============= Saving logs directory 
-LOG_DIRECTORY = Path(r'logs_test1') # Directory to save logs
-# ============= GUI Configs 
+LOG_DIRECTORY = Path(r'/media/MLCanUser/Extreme SSD/pre-test/20251125_test7/Position B') # Directory to save logs
+# ============= GUI Configs
 GUI_UPDATE_INTERVAL = 0.1  # Update GUI every 100ms
 
 
@@ -52,9 +52,9 @@ S3_SPAN_MA = 15.988
 S3_MAX_PSI = 5.0
 
 # SENSOR 1 (B1-I2) (0-600 PSI)
-S1_MIN_MA = 4.001
-S1_SPAN_MA = 15.991
-S1_MAX_PSI = 600.0
+S1_MIN_MA = 4.00
+S1_SPAN_MA = 16.0
+S1_MAX_PSI = 100.0
 
 # SENSOR 6 (B2-I0) (0-5 PSI)
 S6_MIN_MA = 3.998
@@ -125,7 +125,7 @@ CHANNEL_DISPLAY = {
 BOARD_ADDRESSES = [1, 3]  # Two ADC boards
 CHANNELS = ['I0', 'I1', 'I2', 'I3']  # Current channels
 BLOCK_SIZE = 8192  # Total readings per block
-SAMPLE_RATE = 16  # ADC sample rate setting
+SAMPLE_RATE = 16 # ADC sample rate setting
 LOG_EN = False  # Enable/disable console logging to file
 COMMAND_LOG_EN = False  # Enable/disable printing of ADC commands
 BAR_WIDTH = 50  # Width of the bargraph in characters

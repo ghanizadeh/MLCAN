@@ -11,12 +11,17 @@ from utility.signal_segmentor import show_signal_segmentor
 from home.welcome import show_welcome_page
 from data_preprocessing.csv_cleaner_streamlit import process_csv_folder
 from utility.Olga_convertor import show_olga_convertor_page
+from utility.Olga_convertor import show_olga_convertor_page
+from utility.density_viscosity_appender_for_RxDxVx import show_density_viscosity_appender
+from utility.density_viscosity_appender import show_density_viscosity_adder
+from utility.flow_calculator import show_flow_calculator
 from utility.merge_datasets import show_merge_page
 from data_preprocessing.create_ml_dataset import show_create_ML_dataset
 from model.train import show_ML_model_page
 from model.tcn import show_TCN_model_page
 from model.model_window import show_RF_window_page
- 
+from utility.noise_injector import show_noise_injecton_app
+from utility.feature_engineering import show_pseudopressure_app
 
 
 # ----------------------------------
@@ -67,7 +72,7 @@ st.markdown("""
 <style>
 /* Control main container width */
 .block-container {
-    max-width: 75%;      /* 👈 adjust between 75%–95% as you like */
+    max-width: 80%;      /* 👈 adjust between 75%–95% as you like */
     padding-left: 3rem;
     padding-right: 3rem;
     margin: auto;
@@ -103,8 +108,10 @@ with st.sidebar:
     if selected == "Extra Tools":
         submenu = option_menu(
             menu_title="Extra Tools",
-            options=["① Signal Segmentor", "② PvT-Sim Convertor", "③ Data Integration"],
-            icons=["1", "2", "3"],
+            options=["① Signal Segmentor", "② PvT-Sim Convertor", "③ Data Integration", 
+                     "④ Noise Injection", "⑤ Flow Calculator" , "⑥ Density/Viscosity Appender RxDxVx", 
+                     "Density/Viscosity Appender", "Feature Engineering"],
+            icons=["1", "2", "3","4","5","6","7"],
             menu_icon="gear",
             default_index=0,
         )
@@ -129,12 +136,14 @@ if selected == "Home":
 # Data Preprocessing 
 # ----------------------------------------
 elif selected == "① Data Preprocessing":
-    st.title(f"{submenu}")
-    st.subheader(f"📊 ① Data Preprocessing → {submenu}")
+    #st.title(f"{submenu}")
+    #st.subheader(f"📊 ① Data Preprocessing → {submenu}")
     # ----------------------------------------
     #  Calibration page 
     # ----------------------------------------
     if submenu == "① Calibration (mA to psi)":
+        st.title(f"🟩 Calibration (mA to psi)")
+        st.divider()
         with st.container(border=True):
             st.markdown("##### 📂 File Input Options")
             option = st.radio("Choose input method:",("Enter source & destination folders", "Upload files"))
@@ -145,6 +154,8 @@ elif selected == "① Data Preprocessing":
                 if not dest.strip() and source.strip():
                     source_path = Path(source)
                     dest_path = str(source_path.parent / f"{source_path.name}_processed")
+                else:
+                    dest_path = dest if dest.strip() else None
                 if source and os.path.isdir(source):
                     files = [f for f in os.listdir(source) if f.endswith(".csv")]
             elif option == "Upload files":
@@ -175,7 +186,8 @@ elif selected == "① Data Preprocessing":
     # ----------------------------------------
     #  Create ML Dataset page 
     # ----------------------------------------  
-    elif submenu == "② Create ML Dataset":    
+    elif submenu == "② Create ML Dataset": 
+        st.title(f"🟩 Create Machine Learning Dataset") 
         show_create_ML_dataset()
     
     # Back to Top link
@@ -184,12 +196,34 @@ elif selected == "① Data Preprocessing":
 elif selected == "Extra Tools":
     #st.title(f"⚙️ Extra Tools → {submenu}")
     if submenu == "① Signal Segmentor":
+       st.title(f"🟨 Signal Segmentor") 
+       st.divider()
        show_signal_segmentor()
     elif submenu == "② PvT-Sim Convertor":
+       st.title(f"🟨 PvT-Sim Convertor")
+       st.divider() 
        show_olga_convertor_page()
     elif submenu == "③ Data Integration":
+       st.title("🟨 Data Integration")
+       st.divider()
        show_merge_page()
-    
+    elif submenu == "④ Noise Injection":
+       st.title("🟨 Noise Injection")
+       st.divider()
+       show_noise_injecton_app()
+    elif submenu == "⑤ Flow Calculator":
+       st.title("🟨 Flow Calculator")
+       st.divider()
+       show_flow_calculator()
+    elif submenu == "⑥ Density/Viscosity Appender RxDxVx":
+       st.divider()
+       show_density_viscosity_appender()
+    elif submenu == "Density/Viscosity Appender":
+       st.divider()
+       show_density_viscosity_adder()    
+    elif submenu == "Feature Engineering":
+       st.divider()
+       show_pseudopressure_app()   
 
 # ========================================================================================
 #  ML models
@@ -197,21 +231,10 @@ elif selected == "Extra Tools":
 elif selected == "② Models":
     if submenu == "① Ensemble Learning":
         show_ML_model_page()
+
     elif submenu == "② Adaptive Ensemble Learning":
     #    show_RF_window_page()
         st.title("In progress ...")
     elif submenu == "③ TCN":
         show_TCN_model_page()
-
-        
-
-
-elif selected == "Results":
-    st.header(f"Results → {submenu}")
-    if submenu == "Metrics":
-        st.write("📊 Show evaluation metrics here...")
-    elif submenu == "Plots":
-        st.write("📈 Show plots here...")
-    elif submenu == "SHAP":
-        st.write("🔥 Show SHAP values here...")
 

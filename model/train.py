@@ -6,15 +6,19 @@ def show_ML_model_page():
     import seaborn as sns
     import shap
     import xgboost as xgb
-    from sklearn.preprocessing import StandardScaler
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.model_selection import train_test_split, KFold
+    from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+    from catboost import CatBoostRegressor
+    import lightgbm as lgb
+    from sklearn.model_selection import train_test_split, KFold, GroupKFold
     from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
     from sklearn.inspection import PartialDependenceDisplay
-    from sklearn.pipeline import Pipeline
-    from sklearn.gaussian_process import GaussianProcessRegressor
-    from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
     import os
+    import joblib
+    import os
+    from sklearn.model_selection import GroupShuffleSplit
+    from sklearn.base import clone
+    from sklearn.model_selection import GridSearchCV
+
 
     # ================================
     # Utility Functions
@@ -43,7 +47,9 @@ def show_ML_model_page():
         plt.ylabel("Predicted " + target)
         plt.title(f"{model_name} - {dataset_type} Set")
 
-        plt.legend(title=f"{dataset_type}:\nR²={r2:.2f} & MAE={mae:.2f}")
+        #plt.legend(title=f"{dataset_type}:\nR²={r2:.2f} & MAE={mae:.2f}")
+        plt.legend(title=f"New Dataset:\nR²={r2:.2f} & MAE={mae:.2f}")
+
         plt.tight_layout()
         st.pyplot(plt.gcf())
         plt.close()
@@ -124,7 +130,11 @@ def show_ML_model_page():
 
         if selected_features and selected_target:
             # Subset dataframe
-            df_sub = df[selected_features + [selected_target]]
+            # Find Filename column case-insensitively
+            filename_col = next(
+                c for c in df.columns if c.lower() == "filename"
+            )
+            df_sub = df[selected_features + [selected_target, filename_col]]
 
             # Record original size
             original_size = df_sub.shape[0]
@@ -141,70 +151,171 @@ def show_ML_model_page():
             # Update X and y AFTER cleaning
             X = df_clean[selected_features]
             y = df_clean[selected_target]
+            groups = df_clean[filename_col]
 
             if y.isna().any():
                 st.error("❌ Target column still has NaN values after cleaning!")
                 st.stop()
-            # ================= EDA =================
+
             st.divider()
-            with st.expander("📊 EDA (Show/Hide)", expanded=False):
-                st.subheader("🟢 Exploratory Data Analysis (EDA)")
-                st.markdown("#### 🟣 Summary of Statistics")
-                summary = df[selected_features + [selected_target]].describe().T
-                summary['skew'] = df[selected_features + [selected_target]].skew()
-                summary['kurtosis'] = df[selected_features + [selected_target]].kurtosis()
-                st.dataframe(summary.round(3))
 
-                st.markdown("#### 🟣 Scatter Plots + Histograms")
-                plots = plot_pairwise_corr_with_hist(df[selected_features + [selected_target]], selected_target)
-                for fig in plots:
+            # -------------------------------------------------
+            # User control: Run EDA or not
+            # ------------------------------------------------- 
+            run_eda = st.checkbox(
+                "📊 Run Exploratory Data Analysis (EDA)",
+                value=False,
+                help="Enable this only if you want to compute statistics and plots (can be slow for large datasets)."
+            )
+
+            if run_eda:
+                with st.expander("📊 EDA (Show/Hide)", expanded=False):
+                    st.subheader("🟢 Exploratory Data Analysis (EDA)")
+                    st.markdown("#### 🟣 Summary of Statistics")
+                    summary = df[selected_features + [selected_target]].describe().T
+                    summary['skew'] = df[selected_features + [selected_target]].skew()
+                    summary['kurtosis'] = df[selected_features + [selected_target]].kurtosis()
+
+                    st.dataframe(summary.round(3))
+
+                    st.markdown("#### 🟣 Scatter Plots + Histograms")
+                    plots = plot_pairwise_corr_with_hist(df[selected_features + [selected_target]], selected_target)
+                    for fig in plots:
+                        st.pyplot(fig)
+
+                    st.markdown("#### 🟣 Correlation Heatmap")
+                    corr = df[selected_features + [selected_target]].corr()
+                    mask = np.triu(np.ones_like(corr, dtype=bool))
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    sns.heatmap(corr, mask=mask, annot=True, fmt=".2f",
+                                cmap="coolwarm", cbar=True, ax=ax,
+                                square=True, linewidths=0.5,
+                                annot_kws={"size": 9})
+                    #ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="left")
+                    #ax.xaxis.set_ticks_position('bottom')
+                    #ax.xaxis.set_label_position('bottom')
                     st.pyplot(fig)
-
-                st.markdown("#### 🟣 Correlation Heatmap")
-                corr = df[selected_features + [selected_target]].corr()
-                mask = np.triu(np.ones_like(corr, dtype=bool))
-                fig, ax = plt.subplots(figsize=(10, 8))
-                sns.heatmap(corr, mask=mask, annot=True, fmt=".2f",
-                            cmap="coolwarm", cbar=True, ax=ax,
-                            square=True, linewidths=0.5,
-                            annot_kws={"size": 9})
-                #ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha="left")
-                #ax.xaxis.set_ticks_position('bottom')
-                #ax.xaxis.set_label_position('bottom')
-                st.pyplot(fig)
 
             # ================= Model =================
             #with st.container(border=True):
             st.divider()
             st.header("② Model Training and Evaluation")
-            model_choice = st.radio("Select Model", ["Random Forest", "XGBoost", "GPR"])
-            eval_method = st.radio("Evaluation Method", ["Train-Test Split", "K-Fold Cross-Validation"])
+            model_choice = st.radio(
+                "Select Model",
+                ["Random Forest", "CatBoost", "LightGBM", "GBRT"]
+            )
+            eval_method = st.radio("Evaluation Method", ["Train-Test Split", "Group K-Fold Cross-Validation (Run-based)"])
+            use_gridsearch = st.checkbox(
+                "🔍 Enable Grid Search Hyperparameter Optimization",
+                value=False,
+                help="Uses GroupKFold and may take longer"
+            )
 
+            #if model_choice == "Random Forest":
             if model_choice == "Random Forest":
-                base_model = RandomForestRegressor(random_state=42)
-            elif model_choice == "XGBoost":
-                base_model = xgb.XGBRegressor(random_state=42)
-            else:  # GPR
-                # Kernel: constant * RBF (tunable length_scale)
-                kernel = C(1.0, (1e-3, 1e3)) * RBF(length_scale=1.0)
-                base_model = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=5, random_state=42)
-            
+                base_model = RandomForestRegressor(
+                    n_estimators=300,
+                    random_state=42,
+                    n_jobs=-1
+                )
+
+            elif model_choice == "CatBoost":
+                base_model = CatBoostRegressor(
+                    iterations=500,
+                    depth=6,
+                    learning_rate=0.05,
+                    loss_function="RMSE",
+                    verbose=False,
+                    random_state=42
+                )
+
+            elif model_choice == "LightGBM":
+                base_model = lgb.LGBMRegressor(
+                    n_estimators=500,
+                    learning_rate=0.05,
+                    max_depth=-1,
+                    subsample=0.8,
+                    colsample_bytree=0.8,
+                    random_state=42
+                )
+
+            elif model_choice == "GBRT":
+                base_model = GradientBoostingRegressor(
+                    n_estimators=300,
+                    learning_rate=0.05,
+                    max_depth=3,
+                    random_state=42
+                )
+            def get_param_grid(model_name):
+                if model_name == "Random Forest":
+                    return {
+                        "n_estimators": [200, 400],
+                        "max_depth": [None, 10, 20],
+                        "min_samples_split": [2, 5],
+                        "min_samples_leaf": [1, 3],
+                        "max_features": ["sqrt"]
+                    }
+
+                elif model_name == "CatBoost":
+                    return {
+                        "depth": [4, 6, 8],
+                        "learning_rate": [0.03, 0.05],
+                        "iterations": [300, 500]
+                    }
+
+                elif model_name == "LightGBM":
+                    return {
+                        "n_estimators": [300, 600],
+                        "learning_rate": [0.03, 0.05],
+                        "num_leaves": [31, 63],
+                        "subsample": [0.8],
+                        "colsample_bytree": [0.8]
+                    }
+
+                elif model_name == "GBRT":
+                    return {
+                        "n_estimators": [200, 400],
+                        "learning_rate": [0.03, 0.05],
+                        "max_depth": [3, 4]
+                    }
 
             final_model = None
 
-
             if eval_method == "Train-Test Split":
                 test_size = st.slider("Test Size (%)", 10, 50, 25) / 100
-                X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
+                gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=42)
+                train_idx, test_idx = next(gss.split(X, y, groups=groups))
+
+                X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+                y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
                 st.info(f"Size of **Train set**: {X_train.shape}")
                 st.info(f"Size of **Test set**: {X_test.shape}")
+                if use_gridsearch:
+                    param_grid = get_param_grid(model_choice)
+                    cv = GroupKFold(n_splits=5)
 
-                pipeline = Pipeline([
-                    ("scaler", StandardScaler()),
-                    ("model", base_model)
-                ])
-                pipeline.fit(X_train, y_train)
+                    pipeline = GridSearchCV(
+                        estimator=base_model,
+                        param_grid=param_grid,
+                        scoring="neg_root_mean_squared_error",
+                        cv=cv,
+                        n_jobs=-1,
+                        verbose=1
+                    )
 
+                    pipeline.fit(X_train, y_train, groups=groups.iloc[train_idx])
+
+                    st.success("✅ Grid Search Completed")
+                    #st.write("🔹 Best Parameters:", grid.best_params_)
+
+                    #model = pipeline.best_estimator_
+                else:
+                    pipeline = clone(base_model)
+                    pipeline.fit(X_train, y_train)
+               
+                #pipeline = base_model
+                #pipeline.fit(X_train, y_train)
+                final_model = pipeline
                 y_train_pred = pipeline.predict(X_train)
                 y_test_pred = pipeline.predict(X_test)
 
@@ -222,8 +333,9 @@ def show_ML_model_page():
                 plot_predicted_vs_measured_separately(y_train, y_train_pred, "Train", model_choice, selected_target)
                 st.markdown("##### 🟠 Testing Set")
                 plot_predicted_vs_measured_separately(y_test, y_test_pred, "Test", model_choice, selected_target)
-                final_model = pipeline
-
+ 
+                st.write("✅ Number of unique runs:", groups.nunique())
+ 
 
                 # --- Optional diagnostic plots (test set only) ---
                 st.markdown("### Optional Performance Plots")
@@ -294,8 +406,9 @@ def show_ML_model_page():
                         st.pyplot(fig); plt.close(fig)
 
                     # ===== 5️⃣ Feature Importance =====
-                    if show_feat_import and hasattr(final_model["model"], "feature_importances_"):
-                        imp = final_model["model"].feature_importances_
+                    if show_feat_import and hasattr(final_model, "feature_importances_"):
+                        imp = final_model.feature_importances_
+
                         fig, ax = plt.subplots(figsize=(10,4))
                         pd.Series(imp, index=selected_features).sort_values().plot.barh(ax=ax, color="teal")
                         ax.set_title("Feature Importance")
@@ -310,60 +423,97 @@ def show_ML_model_page():
                         ax.set_xlabel("Sample Index"); ax.set_ylabel("|Error|")
                         st.pyplot(fig); plt.close(fig)
 
-            else:  # K-Fold CV
-                k = st.slider("Number of Folds (K)", 2, 10, 5)
-                kf = KFold(n_splits=k, shuffle=True, random_state=42)
-                train_scores, val_scores = [], []
-                all_train_true, all_train_pred = [], []
-                all_val_true, all_val_pred = [], []
+            #else:  # K-Fold CV
+            else:  # Group K-Fold CV
+                k = st.slider("Number of Groups (Folds)", 2, 10, 5)
+                gkf = GroupKFold(n_splits=k)
 
-                for train_idx, val_idx in kf.split(X):
-                    X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-                    y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+                if use_gridsearch:
+                    param_grid = get_param_grid(model_choice)
 
-                    pipeline = Pipeline([
-                        ("scaler", StandardScaler()),
-                        ("model", base_model)
-                    ])
-                    pipeline.fit(X_train, y_train)
+                    grid = GridSearchCV(
+                        estimator=base_model,
+                        param_grid=param_grid,
+                        scoring="neg_root_mean_squared_error",
+                        cv=gkf,
+                        n_jobs=-1,
+                        verbose=1
+                    )
 
-                    y_train_pred = pipeline.predict(X_train)
-                    y_val_pred = pipeline.predict(X_val)
+                    grid.fit(X, y, groups=groups)
 
-                    train_scores.append(get_metrics(y_train, y_train_pred))
-                    val_scores.append(get_metrics(y_val, y_val_pred))
-                    all_train_true.extend(y_train)
-                    all_train_pred.extend(y_train_pred)
-                    all_val_true.extend(y_val)
-                    all_val_pred.extend(y_val_pred)
+                    st.success("✅ Grid Search Completed")
+                    st.write("🔧 Best Parameters:", grid.best_params_)
 
-                avg_train = np.mean(train_scores, axis=0)
-                avg_val = np.mean(val_scores, axis=0)
+                    final_model = grid.best_estimator_
 
-                results = {
-                    "Train (CV Avg)": avg_train,
-                    "Validation (CV Avg)": avg_val
-                }
+                    # --- Evaluate CV performance of best model ---
+                    y_pred = final_model.predict(X)
+                    metrics = get_metrics(y, y_pred)
 
-                results_df = pd.DataFrame(results,
-                                        index=["MAE", "MSE", "RMSE", "R²", "A20 Index"]).T
-                st.subheader("Model Performance")
-                st.dataframe(results_df.round(4))
+                    results_df = pd.DataFrame(
+                        [metrics],
+                        columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
+                        index=["CV (Optimized)"]
+                    )
 
-                st.subheader("Predicted vs. Measured")
-                st.markdown("##### 🔵 Training Set (CV Aggregated)")
-                plot_predicted_vs_measured_separately(np.array(all_train_true), np.array(all_train_pred),
-                                                    "Train", model_choice, selected_target)
-                st.markdown("##### 🟠 Validation Set (CV Aggregated)")
-                plot_predicted_vs_measured_separately(np.array(all_val_true), np.array(all_val_pred),
-                                                    "Validation", model_choice, selected_target)
+                    st.subheader("Model Performance")
+                    st.dataframe(results_df.round(4))
 
-                # retrain full model for new dataset later
-                final_model = Pipeline([
-                    ("scaler", StandardScaler()),
-                    ("model", base_model)
-                ])
-                final_model.fit(X, y)
+                else:
+                    # ---- Your ORIGINAL loop (unchanged) ----
+                    train_scores, val_scores = [], []
+                    all_train_true, all_train_pred = [], []
+                    all_val_true, all_val_pred = [], []
+
+                    for fold, (train_idx, val_idx) in enumerate(
+                        gkf.split(X, y, groups=groups), 1
+                    ):
+                        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
+                        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+
+                        model = clone(base_model)
+                        model.fit(X_train, y_train)
+
+                        y_train_pred = model.predict(X_train)
+                        y_val_pred = model.predict(X_val)
+
+                        train_scores.append(get_metrics(y_train, y_train_pred))
+                        val_scores.append(get_metrics(y_val, y_val_pred))
+
+                        all_train_true.extend(y_train)
+                        all_train_pred.extend(y_train_pred)
+                        all_val_true.extend(y_val)
+                        all_val_pred.extend(y_val_pred)
+
+                    avg_train = np.mean(train_scores, axis=0)
+                    avg_val = np.mean(val_scores, axis=0)
+
+                    results_df = pd.DataFrame(
+                        {
+                            "Train (CV Avg)": avg_train,
+                            "Validation (CV Avg)": avg_val
+                        },
+                        index=["MAE", "MSE", "RMSE", "R²", "A20 Index"]
+                    ).T
+
+                    st.subheader("Model Performance")
+                    st.dataframe(results_df.round(4))
+
+                    st.subheader("Predicted vs. Measured")
+                    plot_predicted_vs_measured_separately(
+                        np.array(all_train_true),
+                        np.array(all_train_pred),
+                        "Train", model_choice, selected_target
+                    )
+                    plot_predicted_vs_measured_separately(
+                        np.array(all_val_true),
+                        np.array(all_val_pred),
+                        "Validation", model_choice, selected_target
+                    )
+
+                    final_model = clone(base_model)
+                    final_model.fit(X, y)
 
             # ==================================================
             #                   Interpretation  
@@ -377,13 +527,10 @@ def show_ML_model_page():
                     feature_names = selected_features
 
                     # Scale X and create explainer
-                    X_scaled = final_model["scaler"].transform(X)
-                    explainer = shap.Explainer(
-                        final_model["model"],
-                        X_scaled,
-                        feature_names=feature_names
-                    )
-                    shap_values = explainer(X_scaled, check_additivity=False)
+                    explainer = shap.Explainer(final_model, X)
+                    shap_values = explainer(X)
+ 
+
 
                     # --- User selects which SHAP visualization to show ---
                     st.markdown("### Choose SHAP Plot Type")
@@ -421,9 +568,12 @@ def show_ML_model_page():
                             "🧭 **Force Plot:** Compact version of the waterfall plot, showing features "
                             "as arrows pushing toward higher or lower predictions."
                         )
-                        idx = st.number_input("Select sample index", 0, len(X) - 1, 0, key="force_idx")
-                        st_shap = shap.plots.force(shap_values[idx], matplotlib=True, show=False)
-                        st.pyplot(st_shap)
+                        idx = st.number_input("Select sample index", 0, len(X) - 1, 0)
+
+                        fig = plt.figure()
+                        shap.plots.waterfall(shap_values[idx], show=False)
+                        st.pyplot(fig)
+                        plt.close(fig)
 
                     # ---------------------------
                     # 3️⃣ Summary / Beeswarm Plot
@@ -436,7 +586,8 @@ def show_ML_model_page():
                         fig = plt.figure()
                         shap.plots.beeswarm(shap_values, show=False)
                         st.pyplot(fig)
-                        plt.close()
+                        plt.close(fig)
+
 
                     # ---------------------------
                     # 4️⃣ Dependence Plot
@@ -448,20 +599,15 @@ def show_ML_model_page():
                         )
 
                         selected_feat = st.selectbox("Select feature", feature_names)
-                        fig, ax = plt.subplots(figsize=(7, 5))
 
-                        # shap.dependence_plot writes directly to the current axes
-                        shap.dependence_plot(
-                            selected_feat,
-                            shap_values.values,
-                            X,
-                            feature_names=feature_names,
-                            interaction_index=None,
-                            ax=ax,
-                            show=False
+                        fig = plt.figure()
+                        shap.plots.scatter(
+                            shap_values[:, selected_feat],
+                            color=shap_values
                         )
                         st.pyplot(fig)
                         plt.close(fig)
+
 
                     # ---------------------------
                     # 5️⃣ Bar Plot
@@ -474,27 +620,34 @@ def show_ML_model_page():
                         fig = plt.figure()
                         shap.plots.bar(shap_values, show=False)
                         st.pyplot(fig)
-                        plt.close()
+                        plt.close(fig)
+
 
                 except Exception as e:
                     st.warning(f"⚠️ SHAP visualization failed: {e}")
 
-
-            # ================= New Dataset =================
+            # ===============================================
+            #                   New Dataset  
+            # ===============================================
             st.divider()
             st.header("④ Test Final Model")
 
             if final_model:
                 test_mode = st.radio(
-                    "Choose how to test the model:",
-                    ["Upload CSV file", "Enter feature values manually"]
+                    #"🞉 ## Choose how to test the model: ##",
+                    "**🞉 Choose how to test the model:**",
+                    [
+                        "1️⃣ Upload CSV file",
+                        "2️⃣ Enter feature values manually",
+                        "3️⃣ Enter source path (multiple datasets)"
+                    ]
                 )
 
                 # ---------------------------
                 # Option 1: Upload a file
                 # ---------------------------
-                if test_mode == "Upload CSV file":
-                    new_data_file = st.file_uploader("Upload a dataset (CSV)", type=["csv"], key="new_dataset")
+                if test_mode == "1️⃣ Upload CSV file":
+                    new_data_file = st.file_uploader("📤 Upload a dataset (CSV)", type=["csv"], key="new_dataset")
                     if new_data_file:
                         new_df = pd.read_csv(new_data_file)
 
@@ -504,142 +657,137 @@ def show_ML_model_page():
                         else:
                             new_X = new_df[selected_features]
                             new_y_true = new_df[selected_target]
+
+                            # --- Generate predictions
                             new_y_pred = final_model.predict(new_X)
 
-                            # Show metrics
-                            new_metrics = get_metrics(new_y_true, new_y_pred)
-                            metrics_df = pd.DataFrame(
-                                [new_metrics],
-                                columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
-                                index=[new_data_file.name]
-                            )
-                            st.subheader("Performance on New Dataset")
-                            # --- Compute mean comparison metrics ---
-                            mean_true = np.mean(new_y_true)
-                            mean_pred = np.mean(new_y_pred)
-                            mean_diff = mean_pred - mean_true
-                            error_percent = (mean_diff / mean_true) * 100
+                            with st.container(border=True):
+                                # --- Option: insert predictions into dataset
+                                st.markdown("##### ➕ Insert Predicted Target into Uploaded Dataset")
+                                insert_pred_option = st.checkbox("Insert predicted target column into uploaded data")
 
-                            # --- Add new columns to metrics_df ---
-                            metrics_df["Error_Mean"] = error_percent
-                            metrics_df["Mean_True"] = mean_true
-                            metrics_df["Mean_Predicted"] = mean_pred
-                            
+                                if insert_pred_option:
+                                    pred_col_name = f"Predicted_{selected_target}"
+                                    new_df[pred_col_name] = new_y_pred
+                                    st.success(f"✅ Column '{pred_col_name}' added to the dataset!")
 
-                            # --- Display all metrics in one row ---
-                            st.dataframe(metrics_df.round(4))
- 
-                            
-                            show_signal_plot = st.checkbox("Visualize predicted vs. true signal and mean error line (for new dataset)")
-                            if show_signal_plot:
-                                fig, ax = plt.subplots(figsize=(8,3))
-                                ax.plot(new_y_true, label="True", color="teal")
-                                ax.plot(new_y_pred, label="Pred", color="orange", linestyle="--")
-                                mean_err = np.mean(new_y_pred - new_y_true)
-                                ax.axhline(mean_err, color="blue", linestyle="--", label=f"Mean Error = {mean_err:.3f}")
-                                ax.legend(); ax.set_title("True vs Predicted Signal with Mean Error Line")
-                                st.pyplot(fig); plt.close(fig)
-                                
-                            # Plot
-                            file_label = os.path.splitext(new_data_file.name)[0]
-                            st.subheader("Predicted vs. Measured (New Dataset)")
-                            plot_predicted_vs_measured_separately(
-                                new_y_true,
-                                new_y_pred,
-                                file_label,
-                                model_choice,
-                                selected_target
-                            )
+                                    st.markdown("##### 📄 Preview of Updated Dataset")
+                                    st.dataframe(new_df.head())
 
-                            # --- Optional diagnostic plots for new dataset ---
-                            st.markdown("### Optional Diagnostic Plots (New Dataset)")
-                            with st.expander("Show / Hide Diagnostic Plots", expanded=False):
-                                show_tracking = st.checkbox("1️⃣ Prediction Tracking (with Mean Lines)", key="new_tracking")
-                                show_error_mean_std = st.checkbox("2️⃣ Prediction Error with Mean ± STD", key="new_err_meanstd")
-                                show_residuals_pred = st.checkbox("3️⃣ Residuals vs Predicted", key="new_resid_pred")
-                                show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)", key="new_resid_dist")
-                                show_abs_err = st.checkbox("5️⃣ Error Magnitude (Absolute Error)", key="new_abs_err")
+                                    # Allow user to export the updated dataset
+                                    csv_pred = new_df.to_csv(index=False).encode("utf-8")
+                                    file_label = os.path.splitext(new_data_file.name)[0]
+                                    out_name = f"{file_label}_with_{pred_col_name}.csv"
+                                    st.download_button(
+                                        "⬇️ Download Dataset with Predictions",
+                                        data=csv_pred,
+                                        file_name=out_name,
+                                        mime="text/csv"
+                                    )
 
-                                # --- common residuals and errors ---
-                                residuals = new_y_pred - new_y_true
-                                abs_err = np.abs(residuals)
+                            with st.container(border=True):
+                                # Show metrics
+                                new_metrics = get_metrics(new_y_true, new_y_pred)
+                                metrics_df = pd.DataFrame(
+                                    [new_metrics],
+                                    columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
+                                    index=[new_data_file.name]
+                                )
+                                st.markdown("##### 🎯 Performance on New Dataset")
+
+                                # --- Compute mean comparison metrics ---
                                 mean_true = np.mean(new_y_true)
                                 mean_pred = np.mean(new_y_pred)
-                                mean_error = np.mean(residuals)
-                                std_error = np.std(residuals)
+                                mean_diff = mean_pred - mean_true
+                                error_percent = (mean_diff / mean_true) * 100
 
-                                # ===== 1️⃣ Prediction Tracking (with Mean Lines) =====
-                                if show_tracking:
-                                    fig, ax = plt.subplots(figsize=(10,5))
-                                    ax.plot(new_y_true, label="True Signal", color='teal', linewidth=2)
-                                    ax.plot(new_y_pred, label="Predicted Signal", color='orange', linestyle='--', linewidth=2)
-                                    ax.axhline(mean_true, color='teal', linestyle=':', linewidth=1.5, label=f"Mean True = {mean_true:.2f}")
-                                    ax.axhline(mean_pred, color='orange', linestyle=':', linewidth=1.5, label=f"Mean Pred = {mean_pred:.2f}")
-                                    ax.set_xlabel("Sample Index")
-                                    ax.set_ylabel(selected_target)
-                                    ax.set_title("True vs. Predicted Signal (with Mean Lines)")
-                                    ax.legend()
-                                    st.pyplot(fig)
-                                    plt.close(fig)
+                                metrics_df["Error_Mean"] = error_percent
+                                metrics_df["Mean_True"] = mean_true
+                                metrics_df["Mean_Predicted"] = mean_pred
+                                st.dataframe(metrics_df.round(8))
 
-                                # ===== 6️⃣ Prediction Error with Mean ± STD =====
-                                if show_error_mean_std:
-                                    fig, ax = plt.subplots(figsize=(10,4))
-                                    ax.plot(residuals, label="Error (Pred - True)", color='red', alpha=0.6)
-                                    ax.axhline(mean_error, color='blue', linestyle='--', linewidth=2, label=f"Mean Error = {mean_error:.4f}")
-                                    ax.axhline(0, color='black', linestyle=':', linewidth=1)
-                                    ax.fill_between(range(len(residuals)),
-                                                    mean_error - std_error,
-                                                    mean_error + std_error,
-                                                    color='blue', alpha=0.1,
-                                                    label=f"±1 STD ({std_error:.4f})")
-                                    ax.set_xlabel("Sample Index")
-                                    ax.set_ylabel("Error (Pred - True)")
-                                    ax.set_title("Prediction Error with Mean ± STD")
-                                    ax.legend()
-                                    st.pyplot(fig)
-                                    plt.close(fig)
+                                file_label = os.path.splitext(new_data_file.name)[0]
+                                st.markdown("##### 📊 Predicted vs. Measured (New Dataset)")
+                                plot_predicted_vs_measured_separately(
+                                    new_y_true,
+                                    new_y_pred,
+                                    file_label,
+                                    model_choice,
+                                    selected_target
+                                )
 
-                                # ===== 2️⃣ Residuals vs Predicted =====
-                                if show_residuals_pred:
-                                    fig, ax = plt.subplots(figsize=(10,4))
-                                    ax.scatter(new_y_pred, residuals, color="purple", alpha=0.6)
-                                    ax.axhline(0, color="black", linestyle="--")
-                                    ax.set_xlabel("Predicted")
-                                    ax.set_ylabel("Residuals")
-                                    ax.set_title("Residuals vs Predicted")
-                                    st.pyplot(fig)
-                                    plt.close(fig)
+                                st.markdown("##### 📈 Performance Plots (New Dataset)")
+                                with st.expander("Show / Hide Diagnostic Plots", expanded=False):
+                                    show_tracking = st.checkbox("1️⃣ Prediction Tracking (with Mean Lines)", key="new_tracking")
+                                    show_error_mean_std = st.checkbox("2️⃣ Prediction Error with Mean ± STD", key="new_err_meanstd")
+                                    show_residuals_pred = st.checkbox("3️⃣ Residuals vs Predicted", key="new_resid_pred")
+                                    show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)", key="new_resid_dist")
+                                    show_abs_err = st.checkbox("5️⃣ Error Magnitude (Absolute Error)", key="new_abs_err")
 
-                                # ===== 3️⃣ Residual Distribution =====
-                                if show_residual_dist:
-                                    fig, ax = plt.subplots(figsize=(10,4))
-                                    sns.histplot(residuals, kde=True, bins=25, color="orange", ax=ax)
-                                    ax.set_title("Residual Distribution (Histogram + KDE)")
-                                    st.pyplot(fig)
-                                    plt.close(fig)
+                                    residuals = new_y_pred - new_y_true
+                                    abs_err = np.abs(residuals)
+                                    mean_error = np.mean(residuals)
+                                    std_error = np.std(residuals)
 
-                                # ===== 4️⃣ Absolute Error =====
-                                if show_abs_err:
-                                    fig, ax = plt.subplots(figsize=(10,4))
-                                    ax.plot(abs_err, color="red", alpha=0.7)
-                                    ax.set_title("Absolute Error per Sample")
-                                    ax.set_xlabel("Sample Index")
-                                    ax.set_ylabel("|Error|")
-                                    st.pyplot(fig)
-                                    plt.close(fig)
- 
+                                    if show_tracking:
+                                        fig, ax = plt.subplots(figsize=(10,5))
+                                        ax.plot(new_y_true, label="True Signal", color='teal', linewidth=2)
+                                        ax.plot(new_y_pred, label="Predicted Signal", color='orange', linestyle='--', linewidth=2)
+                                        ax.axhline(np.mean(new_y_true), color='teal', linestyle=':', linewidth=1.5)
+                                        ax.axhline(np.mean(new_y_pred), color='orange', linestyle=':', linewidth=1.5)
+                                        ax.set_xlabel("Sample Index")
+                                        ax.set_ylabel(selected_target)
+                                        ax.set_title("True vs. Predicted Signal (with Mean Lines)")
+                                        ax.legend()
+                                        st.pyplot(fig)
+                                        plt.close(fig)
 
+                                    if show_error_mean_std:
+                                        fig, ax = plt.subplots(figsize=(10,4))
+                                        ax.plot(residuals, color='red', alpha=0.6)
+                                        ax.axhline(mean_error, color='blue', linestyle='--', linewidth=2)
+                                        ax.axhline(0, color='black', linestyle=':')
+                                        ax.fill_between(range(len(residuals)),
+                                                        mean_error - std_error,
+                                                        mean_error + std_error,
+                                                        color='blue', alpha=0.1)
+                                        ax.set_xlabel("Sample Index")
+                                        ax.set_ylabel("Error (Pred - True)")
+                                        st.pyplot(fig)
+                                        plt.close(fig)
 
+                                    if show_residuals_pred:
+                                        fig, ax = plt.subplots(figsize=(10,4))
+                                        ax.scatter(new_y_pred, residuals, color="purple", alpha=0.6)
+                                        ax.axhline(0, color="black", linestyle="--")
+                                        ax.set_xlabel("Predicted")
+                                        ax.set_ylabel("Residuals")
+                                        st.pyplot(fig)
+                                        plt.close(fig)
+
+                                    if show_residual_dist:
+                                        fig, ax = plt.subplots(figsize=(10,4))
+                                        sns.histplot(residuals, kde=True, bins=25, color="orange", ax=ax)
+                                        ax.set_title("Residual Distribution")
+                                        st.pyplot(fig)
+                                        plt.close(fig)
+
+                                    if show_abs_err:
+                                        fig, ax = plt.subplots(figsize=(10,4))
+                                        ax.plot(abs_err, color="red", alpha=0.7)
+                                        ax.set_title("Absolute Error per Sample")
+                                        ax.set_xlabel("Sample Index")
+                                        ax.set_ylabel("|Error|")
+                                        st.pyplot(fig)
+                                        plt.close(fig)
 
                 # ---------------------------
                 # Option 2: Manual input
                 # ---------------------------
-                else:
-                    st.subheader("Enter feature values manually")
+                elif test_mode == "2️⃣ Enter feature values manually":
+                    st.subheader("2️⃣ Enter feature values manually")
                     sample_input = {}
                     for feat in selected_features:
-                        # You can adjust default values or ranges here
                         val = st.number_input(f"Enter value for {feat}", value=float(df[feat].mean()))
                         sample_input[feat] = val
 
@@ -647,3 +795,65 @@ def show_ML_model_page():
                         sample_df = pd.DataFrame([sample_input])
                         pred = final_model.predict(sample_df)[0]
                         st.success(f"🎯 Predicted {selected_target}: **{pred:.4f}**")
+                # ---------------------------
+                # Option 3: Folder with multiple datasets
+                # ---------------------------
+                elif test_mode == "3️⃣ Enter source path (multiple datasets)":
+                    import glob, zipfile
+                    st.subheader("📂 Apply Model to Multiple Datasets")
+                    src_folder = st.text_input("Enter the source folder path containing CSV files (subfolders will also be checked):")
+
+                    if src_folder and os.path.isdir(src_folder):
+                        # Recursively search all subfolders for .csv files
+                        csv_files = glob.glob(os.path.join(src_folder, "**", "*.csv"), recursive=True)
+
+                        if not csv_files:
+                            st.warning("⚠️ No CSV files found in the given folder or its subfolders.")
+                        else:
+                            st.info(f"📂 Found {len(csv_files)} CSV files (including subfolders).")
+
+                            pred_col_name = f"Predicted_{selected_target}"
+                            progress = st.progress(0)
+                            processed_files = []
+
+                            for i, fpath in enumerate(csv_files, 1):
+                                fname = os.path.basename(fpath)
+                                try:
+                                    df_new = pd.read_csv(fpath)
+                                    if all(col in df_new.columns for col in selected_features):
+                                        X_new = df_new[selected_features]
+                                        preds = final_model.predict(X_new)
+                                        df_new[pred_col_name] = preds
+
+                                        out_path = os.path.join(
+                                            os.path.dirname(fpath),
+                                            f"{os.path.splitext(fname)[0]}_with_{pred_col_name}.csv"
+                                        )
+                                        df_new.to_csv(out_path, index=False)
+                                        processed_files.append(out_path)
+                                    else:
+                                        st.warning(f"⚠️ Skipping {fname} (missing required columns).")
+                                except Exception as e:
+                                    st.error(f"❌ Error processing {fname}: {e}")
+                                progress.progress(i / len(csv_files))
+
+                            '''
+                            # Create ZIP (preserve folder structure)
+                            if processed_files:
+                                zip_path = os.path.join(src_folder, "datasets_with_predictions.zip")
+                                with zipfile.ZipFile(zip_path, "w") as zipf:
+                                    for f in processed_files:
+                                        arcname = os.path.relpath(f, src_folder)
+                                        zipf.write(f, arcname)
+
+                                with open(zip_path, "rb") as f:
+                                    st.download_button(
+                                        "⬇️ Download All Updated Datasets (ZIP)",
+                                        data=f,
+                                        file_name="datasets_with_predictions.zip",
+                                        mime="application/zip"
+                                    )
+                                st.success(f"✅ Processed {len(processed_files)} files successfully!")
+                            '''
+                    else:
+                        st.warning("Please enter a valid folder path.")
