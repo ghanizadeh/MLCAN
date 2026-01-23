@@ -169,7 +169,7 @@ def show_ML_model_page():
             )
 
             if run_eda:
-                with st.expander("📊 EDA (Show/Hide)", expanded=False):
+                with st.expander("📊 EDddddA (Show/Hide)", expanded=False):
                     st.subheader("🟢 Exploratory Data Analysis (EDA)")
                     st.markdown("#### 🟣 Summary of Statistics")
                     summary = df[selected_features + [selected_target]].describe().T
@@ -857,3 +857,4 @@ def show_ML_model_page():
                             '''
                     else:
                         st.warning("Please enter a valid folder path.")
+
