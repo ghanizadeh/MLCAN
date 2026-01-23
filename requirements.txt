@@ -7,3 +7,6 @@ matplotlib
 seaborn
 shap
 xgboost
+lightgbm
+catboost
+
