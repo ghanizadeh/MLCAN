@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -349,7 +350,7 @@ def show_pseudopressure_app():
         st.subheader("🚀 Apply P–T Lookup to Source CSVs")
 
         if st.button("Process All CSV Files"):
-
+            start_time = time.time()
             source_path = Path(source_dir)
             output_dir = Path(dest_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -474,6 +475,7 @@ def show_pseudopressure_app():
 
             st.success("✅ All files processed successfully")
             st.info(f"📁 Files written to: {output_dir}")
-
+            total_time = time.time() - start_time
+            st.success(f"✅ All files processed successfully in {total_time:.2f} seconds")
             st.subheader("📄 Sample Output")
             st.dataframe(df.head())

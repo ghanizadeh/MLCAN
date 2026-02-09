@@ -88,7 +88,7 @@ def get_signal_zero_means(folder_path, indicator_choice, auto_trim_size=None, se
         return None
 
     for file in os.listdir(folder_path):
-        if file.lower().endswith(".csv") and "alicat0.0" in file.lower() and "vfd0.0" in file.lower():
+        if file.lower().endswith((".csv", ".csv.gz")) and "alicat0.0" in file.lower() and "vfd0.0" in file.lower():
             try:
                 df = pd.read_csv(os.path.join(folder_path, file))
                 if indicator_choice != "both" and "indicator" in df.columns:
@@ -141,7 +141,7 @@ def show_create_ML_dataset():
         uploaded_sample = pd.read_csv(uploaded_files[0], nrows=5)
         sample_df, sample_name = uploaded_sample, uploaded_files[0].name
     elif option == "Local Folder" and folder_path and os.path.isdir(folder_path):
-        csvs = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".csv")]
+        csvs = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith((".csv", ".csv.gz"))]
         if csvs:
             folder_sample = pd.read_csv(csvs[0], nrows=5)
             sample_df, sample_name = folder_sample, os.path.basename(csvs[0])
@@ -155,7 +155,7 @@ def show_create_ML_dataset():
         st.warning("⚠️ No file detected yet — please upload or enter a valid folder path.")
 
     possible_sensors = [c for c in numeric_cols if any(x in c.lower() for x in ["sensor", "pt-", "pressure"])]
-    possible_targets = [c for c in numeric_cols if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql","qo", "qw", "qgst", "qost", "qwst"])]
+    possible_targets = [c for c in numeric_cols if any(x in c.lower() for x in ["crl", "alicat", "qg", "ql","qo", "qw", "qgst", "qost", "qwst","wc","gor","glr"])]
 
     selected_sensors = st.multiselect(
         "Select sensor columns:",
@@ -272,7 +272,7 @@ def show_create_ML_dataset():
     if option == "Local Folder":
         if folder_path and os.path.isdir(folder_path):
             if remove_blocks == "Auto-adjust to uniform signal length":
-                csvs = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.endswith(".csv")]
+                csvs = [os.path.join(folder_path, f) for f in os.listdir(folder_path) if f.lower().endswith((".csv", ".csv.gz"))]
                 sizes = []
                 for f in csvs[:4]:
                     try:
@@ -292,7 +292,7 @@ def show_create_ML_dataset():
                 st.error("⚠️ Invalid folder path.")
             else:
                 zero_means = get_signal_zero_means(folder_path, indicator_choice, auto_trim_size, selected_sensors) if apply_signal_zero else None
-                files = [f for f in os.listdir(folder_path) if f.endswith(".csv")]
+                files = [f for f in os.listdir(folder_path) if f.lower().endswith((".csv", ".csv.gz"))]
                 total = len(files)
                 pb = st.progress(0)
 
@@ -363,7 +363,7 @@ def show_create_ML_dataset():
     # 💾 Export Results
     # =====================================================
     if results:
-        st.success("✅ All uploaded files processed!")
+ 
         output_df = pd.DataFrame(results)
         st.markdown("### 📦 Final Dataset")
         st.dataframe(output_df)
