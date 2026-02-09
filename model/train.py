@@ -95,9 +95,9 @@ def show_ML_model_page():
 
             ax_main.scatter(x, y, color=colors[i], alpha=0.7,
                             edgecolor='black', linewidth=0.5)
-            ax_main.plot(line_x, line_y, color='red', linestyle='--',
-                        linewidth=2, label=f'R² = {r2:.2f}')
-            ax_main.legend(loc='upper center')
+            #ax_main.plot(line_x, line_y, color='red', linestyle='--',
+            #            linewidth=2, label=f'R² = {r2:.2f}')
+            #ax_main.legend(loc='upper center')
             ax_main.set_xlabel(col, fontsize=8)
             ax_main.set_ylabel(target_col, fontsize=8)
 
@@ -105,7 +105,47 @@ def show_ML_model_page():
 
             ax_yhist.hist(y, bins=15, orientation='horizontal',
                         color='green', edgecolor='black')
+            # X histogram
+            counts_x, bins_x, patches_x = ax_xhist.hist(
+                x, bins=15, color='green', edgecolor='black'
+            )
 
+            for count, patch in zip(counts_x, patches_x):
+                if count > 0:
+                    ax_xhist.text(
+                        patch.get_x() + patch.get_width() / 2,
+                        count,
+                        int(count),
+                        ha='center',
+                        va='bottom',
+                        fontsize=7
+                    )
+
+            # Y histogram
+            counts_y, bins_y, patches_y = ax_yhist.hist(
+                y, bins=15, orientation='horizontal',
+                color='green', edgecolor='black'
+            )
+
+            for count, patch in zip(counts_y, patches_y):
+                if count > 0:
+                    ax_yhist.text(
+                        count,
+                        patch.get_y() + patch.get_height() / 2,
+                        int(count),
+                        va='center',
+                        ha='left',
+                        fontsize=7
+                    )
+
+            # Remove unwanted spines (borders)
+            ax_xhist.spines["top"].set_visible(False)
+            ax_xhist.spines["right"].set_visible(False)
+            ax_xhist.spines["left"].set_visible(False)
+
+            ax_yhist.spines["right"].set_visible(False)
+            ax_yhist.spines["top"].set_visible(False)
+            ax_yhist.spines["bottom"].set_visible(False)    
 
             plots.append(fig)
 
@@ -169,7 +209,7 @@ def show_ML_model_page():
             )
 
             if run_eda:
-                with st.expander("📊 EDddddA (Show/Hide)", expanded=False):
+                with st.expander("📊 EDA (Show/Hide)", expanded=False):
                     st.subheader("🟢 Exploratory Data Analysis (EDA)")
                     st.markdown("#### 🟣 Summary of Statistics")
                     summary = df[selected_features + [selected_target]].describe().T
@@ -204,7 +244,42 @@ def show_ML_model_page():
                 "Select Model",
                 ["Random Forest", "CatBoost", "LightGBM", "GBRT"]
             )
-            eval_method = st.radio("Evaluation Method", ["Train-Test Split", "Group K-Fold Cross-Validation (Run-based)"])
+
+            eval_method = st.radio(
+                "Evaluation Method",
+                [
+                    "Train-Test Split",
+                    "Train-Validation-Test (Industry Standard)",
+                    "Group K-Fold Cross-Validation (Run-based)"
+                ]
+            )
+
+            if eval_method == "Train-Validation-Test (Industry Standard)":
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    val_size = st.slider(
+                        "Validation Size (%)",
+                        min_value=10,
+                        max_value=30,
+                        value=20,
+                        step=5
+                    ) / 100
+
+                with col2:
+                    test_size = st.slider(
+                        "Test Size (%)",
+                        min_value=10,
+                        max_value=30,
+                        value=20,
+                        step=5
+                    ) / 100
+
+                if val_size + test_size >= 0.5:
+                    st.error("❌ Validation + Test size must be < 50%")
+                    st.stop()
+
+
             use_gridsearch = st.checkbox(
                 "🔍 Enable Grid Search Hyperparameter Optimization",
                 value=False,
@@ -288,8 +363,10 @@ def show_ML_model_page():
 
                 X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
                 y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
                 st.info(f"Size of **Train set**: {X_train.shape}")
                 st.info(f"Size of **Test set**: {X_test.shape}")
+
                 if use_gridsearch:
                     param_grid = get_param_grid(model_choice)
                     cv = GroupKFold(n_splits=5)
@@ -306,35 +383,43 @@ def show_ML_model_page():
                     pipeline.fit(X_train, y_train, groups=groups.iloc[train_idx])
 
                     st.success("✅ Grid Search Completed")
-                    #st.write("🔹 Best Parameters:", grid.best_params_)
+                    st.write("🔧 Best Parameters:", pipeline.best_params_)
 
-                    #model = pipeline.best_estimator_
+                    final_model = pipeline.best_estimator_
+
                 else:
-                    pipeline = clone(base_model)
-                    pipeline.fit(X_train, y_train)
-               
-                #pipeline = base_model
-                #pipeline.fit(X_train, y_train)
-                final_model = pipeline
-                y_train_pred = pipeline.predict(X_train)
-                y_test_pred = pipeline.predict(X_test)
+                    final_model = clone(base_model)
+                    final_model.fit(X_train, y_train)
+
+                # ---------- Predictions ----------
+                y_train_pred = final_model.predict(X_train)
+                y_test_pred = final_model.predict(X_test)
 
                 train_metrics = get_metrics(y_train, y_train_pred)
                 test_metrics = get_metrics(y_test, y_test_pred)
 
-                result_df = pd.DataFrame([train_metrics, test_metrics],
-                                        columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
-                                        index=["Train", "Test"])
+                result_df = pd.DataFrame(
+                    [train_metrics, test_metrics],
+                    columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
+                    index=["Train", "Test"]
+                )
+
                 st.subheader("Model Performance")
                 st.dataframe(result_df.round(4))
 
                 st.subheader("Predicted vs. Measured")
                 st.markdown("##### 🔵 Training Set")
-                plot_predicted_vs_measured_separately(y_train, y_train_pred, "Train", model_choice, selected_target)
+                plot_predicted_vs_measured_separately(
+                    y_train, y_train_pred, "Train", model_choice, selected_target
+                )
                 st.markdown("##### 🟠 Testing Set")
-                plot_predicted_vs_measured_separately(y_test, y_test_pred, "Test", model_choice, selected_target)
- 
-                st.write("✅ Number of unique runs:", groups.nunique())
+                plot_predicted_vs_measured_separately(
+                    y_test, y_test_pred, "Test", model_choice, selected_target
+                )
+
+                st.write("✅ Unique runs — Train:", groups.iloc[train_idx].nunique())
+                st.write("✅ Unique runs — Test:", groups.iloc[test_idx].nunique())
+
  
 
                 # --- Optional diagnostic plots (test set only) ---
@@ -423,11 +508,255 @@ def show_ML_model_page():
                         ax.set_xlabel("Sample Index"); ax.set_ylabel("|Error|")
                         st.pyplot(fig); plt.close(fig)
 
-            #else:  # K-Fold CV
-            else:  # Group K-Fold CV
+            #if eval_method == "Train-Test Split":
+            elif eval_method == "Train-Validation-Test (Industry Standard)":
+
+                # ==================================================
+                # Stage 0: sanity check (already defined above)
+                # val_size, test_size come from sliders
+                # ==================================================
+
+                # ---------- Stage 1: Hold-out TEST ----------
+                gss_test = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=test_size,
+                    random_state=42
+                )
+
+                trainval_idx, test_idx = next(
+                    gss_test.split(X, y, groups=groups)
+                )
+
+                X_trainval = X.iloc[trainval_idx]
+                y_trainval = y.iloc[trainval_idx]
+                groups_trainval = groups.iloc[trainval_idx]
+
+                X_test = X.iloc[test_idx]
+                y_test = y.iloc[test_idx]
+
+                # ---------- Stage 2: Split TRAIN / VALIDATION ----------
+                val_fraction_of_trainval = val_size / (1.0 - test_size)
+
+                gss_val = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=val_fraction_of_trainval,
+                    random_state=42
+                )
+
+                tr_idx, val_idx = next(
+                    gss_val.split(X_trainval, y_trainval, groups=groups_trainval)
+                )
+
+                X_train = X_trainval.iloc[tr_idx]
+                y_train = y_trainval.iloc[tr_idx]
+
+                X_val = X_trainval.iloc[val_idx]
+                y_val = y_trainval.iloc[val_idx]
+
+                st.info(f"Train size: {X_train.shape}")
+                st.info(f"Validation size: {X_val.shape}")
+                st.info(f"Test size (unseen): {X_test.shape}")
+
+                # ==================================================
+                # MODEL TRAINING
+                # ==================================================
+                if use_gridsearch:
+                    param_grid = get_param_grid(model_choice)
+                    cv = GroupKFold(n_splits=5)
+
+                    grid = GridSearchCV(
+                        estimator=base_model,
+                        param_grid=param_grid,
+                        scoring="neg_root_mean_squared_error",
+                        cv=cv,
+                        n_jobs=-1,
+                        verbose=1
+                    )
+
+                    # ⚠️ Grid search sees ONLY train + validation
+                    grid.fit(X_trainval, y_trainval, groups=groups_trainval)
+
+                    final_model = grid.best_estimator_
+                    st.success("✅ Grid Search Completed")
+
+                else:
+                    final_model = clone(base_model)
+                    final_model.fit(X_train, y_train)
+
+                # ==================================================
+                # PREDICTIONS (single source of truth)
+                # ==================================================
+                y_train_pred = final_model.predict(X_train)
+                y_val_pred   = final_model.predict(X_val)
+                y_test_pred  = final_model.predict(X_test)
+
+                # ==================================================
+                # METRICS (single table, no duplication)
+                # ==================================================
+                results_df = pd.DataFrame(
+                    [
+                        get_metrics(y_train, y_train_pred),
+                        get_metrics(y_val, y_val_pred),
+                        get_metrics(y_test, y_test_pred)
+                    ],
+                    columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
+                    index=["Train", "Validation", "Test (Unseen)"]
+                )
+
+                st.subheader("Model Performance")
+                st.dataframe(results_df.round(4))
+
+                # ==================================================
+                # PLOTS (UNCHANGED STYLE)
+                # ==================================================
+                st.subheader("Predicted vs. Measured")
+
+                st.markdown("##### 🔵 Training Set")
+                plot_predicted_vs_measured_separately(
+                    y_train, y_train_pred, "Train", model_choice, selected_target
+                )
+
+                st.markdown("##### 🟢 Validation Set")
+                plot_predicted_vs_measured_separately(
+                    y_val, y_val_pred, "Validation", model_choice, selected_target
+                )
+
+                st.markdown("##### 🟠 Testing Set")
+                plot_predicted_vs_measured_separately(
+                    y_test, y_test_pred, "Test", model_choice, selected_target
+                )
+
+                st.write("✅ Number of unique runs (entire dataset):", groups.nunique())
+
+                # ==================================================
+                # OPTIONAL PERFORMANCE PLOTS (UNCHANGED)
+                # ==================================================
+                st.markdown("### Optional Performance Plots")
+                with st.expander("Show / Hide Performance Plots", expanded=False):
+                    show_tracking = st.checkbox("1️⃣ Prediction Tracking (with Mean Lines)")
+                    show_error_mean_std = st.checkbox("2️⃣ Prediction Error with Mean ± STD")
+                    show_residuals_pred = st.checkbox("3️⃣ Residuals vs Predicted")
+                    show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)")
+                    show_feat_import = st.checkbox("5️⃣ Feature Importance")
+                    show_abs_err = st.checkbox("6️⃣ Error Magnitude (Absolute Error)")
+
+                    # ===== 1️⃣ Prediction Tracking (with Mean Lines) =====
+                    if show_tracking:
+                        fig, ax = plt.subplots(figsize=(10,5))
+                        ax.plot(y_test.values, label="True Signal", color='teal', linewidth=2)
+                        ax.plot(y_test_pred, label="Predicted Signal", color='orange', linestyle='--', linewidth=2)
+
+                        mean_true = np.mean(y_test.values)
+                        mean_pred = np.mean(y_test_pred)
+
+                        ax.axhline(mean_true, color='teal', linestyle=':', linewidth=1.5)
+                        ax.axhline(mean_pred, color='orange', linestyle=':', linewidth=1.5)
+
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel(selected_target)
+                        ax.set_title("True vs. Predicted Signal (with Mean Lines)")
+                        ax.legend()
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # ===== 2️⃣ Prediction Error with Mean ± STD =====
+                    if show_error_mean_std:
+                        error_signal = y_test_pred - y_test.values
+                        mean_error = np.mean(error_signal)
+                        std_error = np.std(error_signal)
+
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        ax.plot(error_signal, color='red', alpha=0.6)
+                        ax.axhline(mean_error, color='blue', linestyle='--', linewidth=2)
+                        ax.axhline(0, color='black', linestyle=':')
+                        ax.fill_between(
+                            range(len(error_signal)),
+                            mean_error - std_error,
+                            mean_error + std_error,
+                            color='blue',
+                            alpha=0.1
+                        )
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel("Error (Pred - True)")
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # ===== 3️⃣ Residuals vs Predicted =====
+                    if show_residuals_pred:
+                        residuals = y_test_pred - y_test.values
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        ax.scatter(y_test_pred, residuals, color="purple", alpha=0.6)
+                        ax.axhline(0, color="black", linestyle="--")
+                        ax.set_xlabel("Predicted")
+                        ax.set_ylabel("Residuals")
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # ===== 4️⃣ Residual Distribution =====
+                    if show_residual_dist:
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        sns.histplot(residuals, kde=True, bins=25, color="orange", ax=ax)
+                        ax.set_title("Residual Distribution")
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # ===== 5️⃣ Feature Importance =====
+                    if show_feat_import and hasattr(final_model, "feature_importances_"):
+                        imp = final_model.feature_importances_
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        pd.Series(imp, index=selected_features).sort_values().plot.barh(ax=ax, color="teal")
+                        ax.set_title("Feature Importance")
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    # ===== 6️⃣ Absolute Error =====
+                    if show_abs_err:
+                        abs_err = np.abs(y_test_pred - y_test.values)
+                        fig, ax = plt.subplots(figsize=(10,4))
+                        ax.plot(abs_err, color="red", alpha=0.7)
+                        ax.set_title("Absolute Error per Sample")
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel("|Error|")
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+
+            else:  # ================= Group K-Fold CV + Hold-out Test =================
+
+                # -------------------------------
+                # User controls
+                # -------------------------------
                 k = st.slider("Number of Groups (Folds)", 2, 10, 5)
+                test_size = st.slider("Test Size (%)", 10, 50, 20) / 100
+
                 gkf = GroupKFold(n_splits=k)
 
+                # -------------------------------
+                # 1️⃣ HOLD-OUT TEST (UNSEEN)
+                # -------------------------------
+                gss_test = GroupShuffleSplit(
+                    n_splits=1,
+                    test_size=test_size,
+                    random_state=42
+                )
+
+                train_idx, test_idx = next(
+                    gss_test.split(X, y, groups=groups)
+                )
+
+                X_train = X.iloc[train_idx]
+                y_train = y.iloc[train_idx]
+                groups_train = groups.iloc[train_idx]
+
+                X_test = X.iloc[test_idx]
+                y_test = y.iloc[test_idx]
+
+                st.info(f"Train size (CV pool): {X_train.shape}")
+                st.info(f"Test size (unseen): {X_test.shape}")
+
+                # ==========================================================
+                # 2️⃣ GRID SEARCH (CV only on TRAIN)
+                # ==========================================================
                 if use_gridsearch:
                     param_grid = get_param_grid(model_choice)
 
@@ -440,52 +769,65 @@ def show_ML_model_page():
                         verbose=1
                     )
 
-                    grid.fit(X, y, groups=groups)
+                    # ⚠️ VERY IMPORTANT: fit ONLY on training data
+                    grid.fit(X_train, y_train, groups=groups_train)
 
                     st.success("✅ Grid Search Completed")
                     st.write("🔧 Best Parameters:", grid.best_params_)
 
                     final_model = grid.best_estimator_
 
-                    # --- Evaluate CV performance of best model ---
-                    y_pred = final_model.predict(X)
-                    metrics = get_metrics(y, y_pred)
+                    # ---------- Final evaluation on UNSEEN TEST ----------
+                    y_test_pred = final_model.predict(X_test)
+                    test_metrics = get_metrics(y_test, y_test_pred)
 
-                    results_df = pd.DataFrame(
-                        [metrics],
-                        columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
-                        index=["CV (Optimized)"]
+                    st.subheader("Final Unseen Test Performance")
+                    st.dataframe(
+                        pd.DataFrame(
+                            [test_metrics],
+                            columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
+                            index=["Test"]
+                        ).round(4)
                     )
 
-                    st.subheader("Model Performance")
-                    st.dataframe(results_df.round(4))
-
+                # ==========================================================
+                # 3️⃣ PURE CV (NO GRID SEARCH) + FINAL TEST
+                # ==========================================================
                 else:
-                    # ---- Your ORIGINAL loop (unchanged) ----
                     train_scores, val_scores = [], []
                     all_train_true, all_train_pred = [], []
                     all_val_true, all_val_pred = [], []
 
-                    for fold, (train_idx, val_idx) in enumerate(
-                        gkf.split(X, y, groups=groups), 1
+                    # -------------------------------
+                    # CV loop (TRAIN ONLY)
+                    # -------------------------------
+                    for fold, (tr_idx, val_idx) in enumerate(
+                        gkf.split(X_train, y_train, groups=groups_train), 1
                     ):
-                        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-                        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+                        X_tr = X_train.iloc[tr_idx]
+                        y_tr = y_train.iloc[tr_idx]
+
+                        X_val = X_train.iloc[val_idx]
+                        y_val = y_train.iloc[val_idx]
 
                         model = clone(base_model)
-                        model.fit(X_train, y_train)
+                        model.fit(X_tr, y_tr)
 
-                        y_train_pred = model.predict(X_train)
+                        y_tr_pred = model.predict(X_tr)
                         y_val_pred = model.predict(X_val)
 
-                        train_scores.append(get_metrics(y_train, y_train_pred))
+                        train_scores.append(get_metrics(y_tr, y_tr_pred))
                         val_scores.append(get_metrics(y_val, y_val_pred))
 
-                        all_train_true.extend(y_train)
-                        all_train_pred.extend(y_train_pred)
+                        all_train_true.extend(y_tr)
+                        all_train_pred.extend(y_tr_pred)
+
                         all_val_true.extend(y_val)
                         all_val_pred.extend(y_val_pred)
 
+                    # -------------------------------
+                    # CV summary
+                    # -------------------------------
                     avg_train = np.mean(train_scores, axis=0)
                     avg_val = np.mean(val_scores, axis=0)
 
@@ -497,10 +839,10 @@ def show_ML_model_page():
                         index=["MAE", "MSE", "RMSE", "R²", "A20 Index"]
                     ).T
 
-                    st.subheader("Model Performance")
+                    st.subheader("Cross-Validation Performance")
                     st.dataframe(results_df.round(4))
 
-                    st.subheader("Predicted vs. Measured")
+                    st.subheader("Predicted vs. Measured (CV)")
                     plot_predicted_vs_measured_separately(
                         np.array(all_train_true),
                         np.array(all_train_pred),
@@ -512,8 +854,24 @@ def show_ML_model_page():
                         "Validation", model_choice, selected_target
                     )
 
+                    # -------------------------------
+                    # 4️⃣ FINAL MODEL → UNSEEN TEST
+                    # -------------------------------
                     final_model = clone(base_model)
-                    final_model.fit(X, y)
+                    final_model.fit(X_train, y_train)
+
+                    y_test_pred = final_model.predict(X_test)
+                    test_metrics = get_metrics(y_test, y_test_pred)
+
+                    st.subheader("Final Unseen Test Performance")
+                    st.dataframe(
+                        pd.DataFrame(
+                            [test_metrics],
+                            columns=["MAE", "MSE", "RMSE", "R²", "A20 Index"],
+                            index=["Test"]
+                        ).round(4)
+                    )
+
 
             # ==================================================
             #                   Interpretation  
@@ -857,4 +1215,3 @@ def show_ML_model_page():
                             '''
                     else:
                         st.warning("Please enter a valid folder path.")
-
