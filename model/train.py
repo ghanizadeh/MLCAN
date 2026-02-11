@@ -36,6 +36,8 @@ def show_ML_model_page():
 
         plt.scatter(y_true, y_pred, c=color, edgecolors='black',
                     marker='o' if "Train" in dataset_type else 'v', alpha=0.7)
+ 
+        #
 
         plt.plot([min_val, max_val], [min_val, max_val], 'k--')
         plt.plot([min_val, max_val], [min_val, 1.2 * max_val], 'r--', linewidth=1, label='20% Error')
@@ -157,51 +159,434 @@ def show_ML_model_page():
     st.title("🟪 Ensemble Learning Models")
     st.divider()
     st.header("📁 Import Dataset")
-    uploaded_file = st.file_uploader("► Upload your file (csv)", type=["csv"])
 
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
+    # -------------------------------
+    # Option selector
+    # -------------------------------
+    input_mode = st.radio(
+        "Choose data source:",
+        ["Upload file", "Read from path"],
+        horizontal=True
+    )
+
+    df = None
+
+    # ===============================
+    # 📤 OPTION 1: Upload file
+    # ===============================
+    if input_mode == "Upload file":
+        uploaded_file = st.file_uploader(
+            "► Upload your file (.csv or .csv.gz)",
+            type=["csv", "gz"]
+        )
+
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.endswith(".gz"):
+                    df = pd.read_csv(uploaded_file, compression="gzip")
+                else:
+                    df = pd.read_csv(uploaded_file)
+
+                st.success(f"Loaded file: {uploaded_file.name}")
+            except Exception as e:
+                st.error(f"Failed to read file: {e}")
+
+    # ===============================
+    # 📂 OPTION 2: Read from path
+    # ===============================
+    else:
+        file_path = st.text_input(
+            "► Enter full file path (.csv or .csv.gz)",
+            placeholder="e.g. /data/my_file.csv.gz"
+        )
+
+        if file_path:
+            if not os.path.exists(file_path):
+                st.error("Path does not exist.")
+            else:
+                try:
+                    if file_path.endswith(".gz"):
+                        df = pd.read_csv(file_path, compression="gzip")
+                    else:
+                        df = pd.read_csv(file_path)
+
+                    st.success(f"Loaded file from path: {file_path}")
+                except Exception as e:
+                    st.error(f"Failed to read file: {e}")
+
+    # ===============================
+    # ✅ Final check
+    # ===============================
+    if df is not None:
+        st.info(f"Dataset shape: {df.shape}")
+        filename_col = next(c for c in df.columns if c.lower() == "filename")
+        df_base = df.dropna(subset=[filename_col]).drop_duplicates() # minimal cleaning (NO feature logic)
+ 
+        # ============================================================
+        # 0️⃣ Advanced Physics-Aware Splitting
+        # ============================================================
+        st.divider()
+        st.header("⓪ Advanced Physics-Aware Data Splitting")
+
+        enable_adv_split = st.checkbox("Enable advanced splitting", value=False)
+
+        train_idx = test_idx = None
+        split_report = {}
+
+        numeric_cols = df_base.select_dtypes(include="number").columns.tolist()
+        groups = df_base[filename_col]
+
+        if enable_adv_split:
+
+            numeric_cols = df_base.select_dtypes(include="number").columns.tolist()
+            split_type = st.radio(
+                "Select advanced split type",
+                [
+                    "Group-aware sorted split (Pressure / GOR extrapolation)",
+                    "Multi-bin regime split (Low / Mid / High) [Group-aware]",
+                    "LORO + Pressure Tail (Deployment Stress Test)"
+                ]
+            )
+
+
+            # ========================================================
+            # 1️⃣ GROUP-AWARE SORTED SPLIT
+            # ========================================================
+            if "Group-aware" in split_type:
+
+                # ========================================================
+                # GROUP-AWARE: Random TEST + Sorted VALIDATION
+                # ========================================================
+
+                sort_col = st.selectbox(
+                    "Select physics sorting column (for VALIDATION)",
+                    numeric_cols
+                )
+
+                # --- TEST: random, group-aware ---
+                test_percent = st.slider(
+                    "Test set size (%) — RANDOM",
+                    10, 40, 20, step=5
+                ) / 100
+
+                # --- VALIDATION: sorted, group-aware ---
+                val_percent = st.slider(
+                    "Validation set size (%) — SORTED",
+                    10, 40, 20, step=5
+                ) / 100
+
+                direction = st.radio(
+                    "Which side goes to VALIDATION?",
+                    ["Highest values", "Lowest values"],
+                    horizontal=True
+                )
+
+                if test_percent + val_percent >= 0.6:
+                    st.error("❌ Test + Validation must be < 60%")
+                    st.stop()
+
+                # --------------------------------------------------
+                # STEP 1️⃣ Random TEST (group-aware)
+                # --------------------------------------------------
+                unique_runs = df_base[filename_col].unique()
+
+                rng = np.random.default_rng(42)
+                n_test_runs = max(1, int(len(unique_runs) * test_percent))
+                test_runs = rng.choice(unique_runs, size=n_test_runs, replace=False)
+
+                df_remaining = df_base[~df_base[filename_col].isin(test_runs)]
+
+                # --------------------------------------------------
+                # STEP 2️⃣ Sorted VALIDATION (group-aware)
+                # --------------------------------------------------
+                run_stat = (
+                    df_remaining
+                    .groupby(filename_col)[sort_col]
+                    .mean()
+                    .sort_values(ascending=(direction == "Lowest values"))
+                )
+
+                n_val_runs = max(1, int(len(run_stat) * val_percent))
+                val_runs = run_stat.iloc[:n_val_runs].index
+
+                train_runs = run_stat.iloc[n_val_runs:].index
+
+                # --------------------------------------------------
+                # STEP 3️⃣ Final indices
+                # --------------------------------------------------
+                train_idx = df_base[df_base[filename_col].isin(train_runs)].index
+                val_idx   = df_base[df_base[filename_col].isin(val_runs)].index
+                test_idx  = df_base[df_base[filename_col].isin(test_runs)].index
+
+                # --------------------------------------------------
+                # Safety checks
+                # --------------------------------------------------
+                assert not set(train_idx) & set(val_idx)
+                assert not set(train_idx) & set(test_idx)
+                assert not set(val_idx) & set(test_idx)
+
+                split_report = {
+                    "mode": "Group-aware random TEST + sorted VALIDATION",
+                    "column": sort_col,
+                    "test_percent": test_percent,
+                    "val_percent": val_percent,
+                    "validation_direction": direction,
+                    "train_runs": len(train_runs),
+                    "val_runs": len(val_runs),
+                    "test_runs": len(test_runs)
+                }
+
+                st.success("✅ Random TEST + Physics-aware VALIDATION split applied")
+
+
+            # ========================================================
+            # 2️⃣ MULTI-BIN REGIME SPLIT
+            # ========================================================
+            elif "Multi-bin" in split_type:
+
+                regime_col = st.selectbox(
+                    "Select regime column (e.g. GLR or GOR)",
+                    numeric_cols
+                )
+
+                test_percent = st.slider(
+                    "Test size (%) — EXTREME regime",
+                    10, 40, 20, step=5
+                ) / 100
+
+                val_percent = st.slider(
+                    "Validation size (%) — NEAR-extreme regime",
+                    10, 40, 20, step=5
+                ) / 100
+
+                direction = st.radio(
+                    "Which side is extreme?",
+                    ["High regime", "Low regime"],
+                    horizontal=True
+                )
+
+                if test_percent + val_percent >= 0.6:
+                    st.error("❌ Test + Validation must be < 60%")
+                    st.stop()
+
+                run_stat = (
+                    df_base
+                    .groupby(filename_col)[regime_col]
+                    .mean()
+                    .sort_values(ascending=(direction == "Low regime"))
+                )
+
+                n_test = max(1, int(len(run_stat) * test_percent))
+                n_val  = max(1, int(len(run_stat) * val_percent))
+
+                test_runs = run_stat.iloc[:n_test].index
+                val_runs  = run_stat.iloc[n_test:n_test + n_val].index
+                train_runs = run_stat.iloc[n_test + n_val:].index
+
+                train_idx = df_base[df_base[filename_col].isin(train_runs)].index
+                val_idx   = df_base[df_base[filename_col].isin(val_runs)].index
+                test_idx  = df_base[df_base[filename_col].isin(test_runs)].index
+
+                split_report = {
+                    "mode": "Multi-bin regime split",
+                    "column": regime_col,
+                    "direction": direction,
+                    "train_runs": len(train_runs),
+                    "val_runs": len(val_runs),
+                    "test_runs": len(test_runs),
+                }
+
+                st.success("✅ Multi-bin Train / Validation / Test split applied")
+
+
+
+            # ========================================================
+            # 3️⃣ LORO + PRESSURE TAIL
+            # ========================================================
+            elif "LORO" in split_type:
+
+                pressure_col = st.selectbox("Select pressure column", numeric_cols)
+
+                test_run = st.selectbox(
+                    "Select run to leave out",
+                    df_base[filename_col].unique()
+                )
+
+                test_tail = st.slider("Test tail (%)", 10, 40, 20, step=5) / 100
+                val_tail  = st.slider("Validation tail (%)", 10, 40, 20, step=5) / 100
+
+                if test_tail + val_tail >= 0.6:
+                    st.error("❌ Test + Validation tail too large")
+                    st.stop()
+
+                df_run = df_base[df_base[filename_col] == test_run]
+                df_other = df_base[df_base[filename_col] != test_run]
+
+                df_sorted = df_run.sort_values(pressure_col)
+
+                n_test = max(1, int(len(df_sorted) * test_tail))
+                n_val  = max(1, int(len(df_sorted) * val_tail))
+
+                test_idx = df_sorted.iloc[-n_test:].index
+                val_idx  = df_sorted.iloc[-(n_test + n_val):-n_test].index
+                train_idx = df_other.index.union(df_sorted.iloc[:-(n_test + n_val)].index)
+
+                split_report = {
+                    "mode": "LORO + pressure tail",
+                    "test_run": test_run,
+                    "pressure_col": pressure_col,
+                    "test_tail": test_tail,
+                    "val_tail": val_tail
+                }
+
+                st.success("✅ LORO Train / Validation / Test split applied")
+
+                
+            # ========================================================
+            # 3️⃣ VISUAL PREVIEW
+            # ========================================================
+            with st.expander("📊 Preview split distribution", expanded=True):
+
+                preview_col = split_report["column"]  
+
+                fig, ax = plt.subplots(figsize=(8, 4))
+                fig, ax = plt.subplots(figsize=(8, 4))
+
+                ax.hist(
+                    df_base.loc[train_idx, preview_col],
+                    bins=30, alpha=0.6, label="Train", color="teal"
+                )
+
+                if val_idx is not None and len(val_idx) > 0:
+                    ax.hist(
+                        df_base.loc[val_idx, preview_col],
+                        bins=30, alpha=0.6, label="Validation", color="green"
+                    )
+
+                ax.hist(
+                    df_base.loc[test_idx, preview_col],
+                    bins=30, alpha=0.6, label="Test", color="orange"
+                )
+
+                ax.set_xlabel(preview_col)
+                ax.set_ylabel("Count")
+                ax.set_title("Train / Validation / Test Distribution")
+                ax.legend()
+
+
+                st.pyplot(fig)
+                plt.close(fig)
+                st.write(split_report)
+                st.write("Train rows:", len(train_idx))
+                st.write("Validation rows:", len(val_idx) if val_idx is not None else 0)
+                st.write("Test rows:", len(test_idx))
+                st.write("Unique runs (train):", groups.iloc[train_idx].nunique())
+                st.write("Unique runs (val):", groups.iloc[val_idx].nunique() if val_idx is not None else 0)
+                st.write("Unique runs (test):", groups.iloc[test_idx].nunique())
+                st.write("range of Train's selected feature:",
+                        df_base.loc[train_idx, preview_col].min(),
+                        "→",
+                        df_base.loc[train_idx, preview_col].max())
+                st.write("range of Validation's selected feature:",
+                        df_base.loc[val_idx, preview_col].min() if val_idx is not None else "N/A",
+                        "→",
+                        df_base.loc[val_idx, preview_col].max() if val_idx is not None else "N/A")
+                st.write("range of Test's selected feature:",
+                        df_base.loc[test_idx, preview_col].min(),
+                        "→",
+                        df_base.loc[test_idx, preview_col].max())
+
+                # ========================================================
+                # ⬇️ DOWNLOAD TRAIN / TEST SPLITS
+                # ========================================================
+                st.divider()
+                st.subheader("⬇️ Download Split Datasets")
+
+                if train_idx is not None and test_idx is not None:
+
+                    train_df_export = df_base.loc[train_idx].copy()
+                    test_df_export  = df_base.loc[test_idx].copy()
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.download_button(
+                            "⬇️ Download TRAIN set",
+                            data=train_df_export.to_csv(index=False).encode("utf-8"),
+                            file_name="train_split_physics_aware.csv",
+                            mime="text/csv"
+                        )
+
+                    with col2:
+                        st.download_button(
+                            "⬇️ Download TEST set",
+                            data=test_df_export.to_csv(index=False).encode("utf-8"),
+                            file_name="test_split_physics_aware.csv",
+                            mime="text/csv"
+                        )
+
+                else:
+                    st.info("ℹ️ Enable advanced splitting to download Train/Test datasets.")
+
+                
+        st.session_state["split_indices"] = {
+            "train_idx": train_idx,
+            "val_idx": val_idx if "val_idx" in locals() else None,
+            "test_idx": test_idx,
+            "report": split_report
+        }
+
         st.divider()
         st.header("① Select Features & Target")
-        cols = df.columns.tolist()
+        cols = df_base.columns.tolist()
         selected_features = st.multiselect("► Select **Features**", options=cols)
         selected_target = st.selectbox("► Select **Target**",
                                     options=[col for col in cols if col not in selected_features])
 
         if selected_features and selected_target:
-            # Subset dataframe
-            # Find Filename column case-insensitively
-            filename_col = next(
-                c for c in df.columns if c.lower() == "filename"
-            )
-            df_sub = df[selected_features + [selected_target, filename_col]]
 
-            # Record original size
-            original_size = df_sub.shape[0]
+            # Subset datafram
 
-            # Clean: drop rows where any selected feature OR target is NaN
-            df_clean = df_sub.dropna().drop_duplicates()
+            X_all = df_base[selected_features]
+            y_all = df_base[selected_target]
 
-            # Record cleaned size
-            cleaned_size = df_clean.shape[0]
+            split_info = st.session_state.get("split_indices", None)
 
-            # Report to Streamlit
-            st.info(f"🧹 Data cleaned (NAN & Dulpicattion removal): Original size = **{original_size}**, Cleaned size = **{cleaned_size}**")
+            if split_info and split_info["train_idx"] is not None:
+                train_idx = split_info["train_idx"]
+                test_idx = split_info["test_idx"]
+            else:
+                # fallback (simple random split)
+                gss = GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+                train_idx, test_idx = next(gss.split(X_all, y_all, groups))
 
-            # Update X and y AFTER cleaning
-            X = df_clean[selected_features]
-            y = df_clean[selected_target]
-            groups = df_clean[filename_col]
+            X_train = X_all.iloc[train_idx]
+            y_train = y_all.iloc[train_idx]
 
-            if y.isna().any():
-                st.error("❌ Target column still has NaN values after cleaning!")
-                st.stop()
+            X_test = X_all.iloc[test_idx]
+            y_test = y_all.iloc[test_idx]
 
-            st.divider()
+
+
+
 
             # -------------------------------------------------
             # User control: Run EDA or not
             # ------------------------------------------------- 
+            st.divider()
+            # -------------------------------------------------
+            # Decide which data EDA should see
+            # -------------------------------------------------
+            split_info = st.session_state.get("split_indices", None)
+
+            eda_df = df_base.copy()  # default = full dataset
+
+            if split_info and split_info["train_idx"] is not None:
+                eda_df = df_base.loc[split_info["train_idx"]]
+                st.info("📊 EDA is running on TRAIN set only (split enabled)")
+            else:
+                st.info("📊 EDA is running on FULL dataset (no split)")
+
             run_eda = st.checkbox(
                 "📊 Run Exploratory Data Analysis (EDA)",
                 value=False,
@@ -212,22 +597,28 @@ def show_ML_model_page():
                 with st.expander("📊 EDA (Show/Hide)", expanded=False):
                     st.subheader("🟢 Exploratory Data Analysis (EDA)")
                     st.markdown("#### 🟣 Summary of Statistics")
-                    summary = df[selected_features + [selected_target]].describe().T
-                    summary['skew'] = df[selected_features + [selected_target]].skew()
-                    summary['kurtosis'] = df[selected_features + [selected_target]].kurtosis()
+                    summary = eda_df[selected_features + [selected_target]].describe().T
+                    summary['skew'] = eda_df[selected_features + [selected_target]].skew()
+                    summary['kurtosis'] = eda_df[selected_features + [selected_target]].kurtosis()
+
 
                     st.dataframe(summary.round(3))
 
                     st.markdown("#### 🟣 Scatter Plots + Histograms")
-                    plots = plot_pairwise_corr_with_hist(df[selected_features + [selected_target]], selected_target)
+                    plots = plot_pairwise_corr_with_hist(
+                        eda_df[selected_features + [selected_target]],
+                        selected_target
+                    )
+
                     for fig in plots:
                         st.pyplot(fig)
 
                     st.markdown("#### 🟣 Correlation Heatmap")
-                    corr = df[selected_features + [selected_target]].corr()
+                    corr = eda_df[selected_features + [selected_target]].corr()
+
                     mask = np.triu(np.ones_like(corr, dtype=bool))
                     fig, ax = plt.subplots(figsize=(10, 8))
-                    sns.heatmap(corr, mask=mask, annot=True, fmt=".2f",
+                    sns.heatmap(corr,  annot=True, fmt=".2f",
                                 cmap="coolwarm", cbar=True, ax=ax,
                                 square=True, linewidths=0.5,
                                 annot_kws={"size": 9})
@@ -235,6 +626,10 @@ def show_ML_model_page():
                     #ax.xaxis.set_ticks_position('bottom')
                     #ax.xaxis.set_label_position('bottom')
                     st.pyplot(fig)
+                    st.caption(
+                        f"EDA rows used: {len(eda_df)} "
+                        f"({eda_df[filename_col].nunique()} unique runs)"
+                    )
 
             # ================= Model =================
             #with st.container(border=True):
@@ -253,32 +648,7 @@ def show_ML_model_page():
                     "Group K-Fold Cross-Validation (Run-based)"
                 ]
             )
-
-            if eval_method == "Train-Validation-Test (Industry Standard)":
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    val_size = st.slider(
-                        "Validation Size (%)",
-                        min_value=10,
-                        max_value=30,
-                        value=20,
-                        step=5
-                    ) / 100
-
-                with col2:
-                    test_size = st.slider(
-                        "Test Size (%)",
-                        min_value=10,
-                        max_value=30,
-                        value=20,
-                        step=5
-                    ) / 100
-
-                if val_size + test_size >= 0.5:
-                    st.error("❌ Validation + Test size must be < 50%")
-                    st.stop()
-
+ 
 
             use_gridsearch = st.checkbox(
                 "🔍 Enable Grid Search Hyperparameter Optimization",
@@ -356,13 +726,44 @@ def show_ML_model_page():
 
             final_model = None
 
-            if eval_method == "Train-Test Split":
-                test_size = st.slider("Test Size (%)", 10, 50, 25) / 100
-                gss = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=42)
-                train_idx, test_idx = next(gss.split(X, y, groups=groups))
+            split_info = st.session_state.get("split_indices", None)
 
-                X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
-                y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+            has_predefined_split = (
+                split_info is not None
+                and split_info["train_idx"] is not None
+                and split_info["test_idx"] is not None
+                and "val_idx" in split_info
+            )
+
+            if eval_method == "Train-Test Split":
+                if has_predefined_split:
+                    # ✅ Use Section 0 split
+                    st.info("📌 Using predefined split from Section 0")
+
+                    train_idx = split_info["train_idx"]
+                    test_idx  = split_info["test_idx"] 
+
+                else:
+
+                    # 🆕 User did NOT define a split → create one here
+                    test_size = st.slider("Test Size (%)", 10, 50, 25) / 100
+
+                    gss = GroupShuffleSplit(
+                        n_splits=1,
+                        test_size=test_size,
+                        random_state=42
+                    )
+
+                    train_idx, test_idx = next(
+                        gss.split(X_all, y_all, groups=groups)
+                    )
+
+                # ---------- Apply indices ----------
+                X_train = X_all.loc[train_idx]
+                y_train = y_all.loc[train_idx]
+
+                X_test  = X_all.loc[test_idx]
+                y_test  = y_all.loc[test_idx]
 
                 st.info(f"Size of **Train set**: {X_train.shape}")
                 st.info(f"Size of **Test set**: {X_test.shape}")
@@ -511,48 +912,92 @@ def show_ML_model_page():
             #if eval_method == "Train-Test Split":
             elif eval_method == "Train-Validation-Test (Industry Standard)":
 
-                # ==================================================
-                # Stage 0: sanity check (already defined above)
-                # val_size, test_size come from sliders
-                # ==================================================
+                if has_predefined_split:
+                    st.info("📌 Using physics-aware Train / Validation / Test split from Section 0")
 
-                # ---------- Stage 1: Hold-out TEST ----------
-                gss_test = GroupShuffleSplit(
-                    n_splits=1,
-                    test_size=test_size,
-                    random_state=42
-                )
+                    train_idx = split_info["train_idx"]
+                    val_idx   = split_info["val_idx"]
+                    test_idx  = split_info["test_idx"]
 
-                trainval_idx, test_idx = next(
-                    gss_test.split(X, y, groups=groups)
-                )
+                    X_train = X_all.loc[train_idx]
+                    y_train = y_all.loc[train_idx]
 
-                X_trainval = X.iloc[trainval_idx]
-                y_trainval = y.iloc[trainval_idx]
-                groups_trainval = groups.iloc[trainval_idx]
+                    X_val = X_all.loc[val_idx]
+                    y_val = y_all.loc[val_idx]
 
-                X_test = X.iloc[test_idx]
-                y_test = y.iloc[test_idx]
+                    X_test = X_all.loc[test_idx]
+                    y_test = y_all.loc[test_idx]
 
-                # ---------- Stage 2: Split TRAIN / VALIDATION ----------
-                val_fraction_of_trainval = val_size / (1.0 - test_size)
+                else:
+                    st.warning("⚠️ No predefined split — creating Train / Validation / Test")
 
-                gss_val = GroupShuffleSplit(
-                    n_splits=1,
-                    test_size=val_fraction_of_trainval,
-                    random_state=42
-                )
+                    col1, col2 = st.columns(2)
 
-                tr_idx, val_idx = next(
-                    gss_val.split(X_trainval, y_trainval, groups=groups_trainval)
-                )
+                    with col1:
+                        val_size = st.slider(
+                            "Validation Size (%)",
+                            min_value=10,
+                            max_value=30,
+                            value=20,
+                            step=5
+                        ) / 100
 
-                X_train = X_trainval.iloc[tr_idx]
-                y_train = y_trainval.iloc[tr_idx]
+                    with col2:
+                        test_size = st.slider(
+                            "Test Size (%)",
+                            min_value=10,
+                            max_value=30,
+                            value=20,
+                            step=5
+                        ) / 100
 
-                X_val = X_trainval.iloc[val_idx]
-                y_val = y_trainval.iloc[val_idx]
+                    if val_size + test_size >= 0.5:
+                        st.error("❌ Validation + Test size must be < 50%")
+                        st.stop()
+                    # -------------------------
+                    # Stage 1: TEST split
+                    # -------------------------
+                    gss_test = GroupShuffleSplit(
+                        n_splits=1,
+                        test_size=test_size,
+                        random_state=42
+                    )
 
+                    trainval_idx, test_idx = next(
+                        gss_test.split(X_all, y_all, groups=groups)
+                    )
+
+                    X_test = X_all.loc[test_idx]
+                    y_test = y_all.loc[test_idx]
+
+                    X_trainval = X_all.loc[trainval_idx]
+                    y_trainval = y_all.loc[trainval_idx]
+                    groups_trainval = groups.loc[trainval_idx]
+
+                    # -------------------------
+                    # Stage 2: VALIDATION split
+                    # -------------------------
+                    val_fraction_of_trainval = val_size / (1.0 - test_size)
+
+                    gss_val = GroupShuffleSplit(
+                        n_splits=1,
+                        test_size=val_fraction_of_trainval,
+                        random_state=42
+                    )
+
+                    tr_idx, val_idx = next(
+                        gss_val.split(X_trainval, y_trainval, groups=groups_trainval)
+                    )
+
+                    X_train = X_trainval.iloc[tr_idx]
+                    y_train = y_trainval.iloc[tr_idx]
+
+                    X_val = X_trainval.iloc[val_idx]
+                    y_val = y_trainval.iloc[val_idx]
+
+                # -------------------------
+                # Final sanity info
+                # -------------------------
                 st.info(f"Train size: {X_train.shape}")
                 st.info(f"Validation size: {X_val.shape}")
                 st.info(f"Test size (unseen): {X_test.shape}")
@@ -722,34 +1167,33 @@ def show_ML_model_page():
 
 
             else:  # ================= Group K-Fold CV + Hold-out Test =================
+                if has_predefined_split:
+                    st.info("📌 Using predefined TEST set from Section 0")
 
-                # -------------------------------
-                # User controls
-                # -------------------------------
-                k = st.slider("Number of Groups (Folds)", 2, 10, 5)
-                test_size = st.slider("Test Size (%)", 10, 50, 20) / 100
+                    train_idx = split_info["train_idx"]
+                    test_idx  = split_info["test_idx"]
 
-                gkf = GroupKFold(n_splits=k)
+                else:
+                    test_size = st.slider("Test Size (%)", 10, 50, 20) / 100
 
-                # -------------------------------
-                # 1️⃣ HOLD-OUT TEST (UNSEEN)
-                # -------------------------------
-                gss_test = GroupShuffleSplit(
-                    n_splits=1,
-                    test_size=test_size,
-                    random_state=42
-                )
+                    gss_test = GroupShuffleSplit(
+                        n_splits=1,
+                        test_size=test_size,
+                        random_state=42
+                    )
 
-                train_idx, test_idx = next(
-                    gss_test.split(X, y, groups=groups)
-                )
+                    train_idx, test_idx = next(
+                        gss_test.split(X_all, y_all, groups=groups)
+                    )
 
-                X_train = X.iloc[train_idx]
-                y_train = y.iloc[train_idx]
-                groups_train = groups.iloc[train_idx]
+                # --- Apply split ---
+                X_train = X_all.loc[train_idx]
+                y_train = y_all.loc[train_idx]
+                groups_train = groups.loc[train_idx]
 
-                X_test = X.iloc[test_idx]
-                y_test = y.iloc[test_idx]
+                X_test = X_all.loc[test_idx]
+                y_test = y_all.loc[test_idx]
+
 
                 st.info(f"Train size (CV pool): {X_train.shape}")
                 st.info(f"Test size (unseen): {X_test.shape}")
@@ -881,17 +1325,19 @@ def show_ML_model_page():
             show_shap = st.checkbox("4.1 Show SHAP Plots")
 
             if show_shap and final_model:
+
                 try:
-                    feature_names = selected_features
+                    shap_dataset_choice = st.radio(
+                        "Compute SHAP on:",
+                        ["Train Set", "Test Set"],
+                        horizontal=True
+                    )
 
-                    # Scale X and create explainer
-                    explainer = shap.Explainer(final_model, X)
-                    shap_values = explainer(X)
- 
+                    shap_X = X_train if shap_dataset_choice == "Train Set" else X_test
 
+                    explainer = shap.Explainer(final_model, shap_X)
+                    shap_values = explainer(shap_X)
 
-                    # --- User selects which SHAP visualization to show ---
-                    st.markdown("### Choose SHAP Plot Type")
                     shap_plot_type = st.radio(
                         "Select visualization type:",
                         [
@@ -899,87 +1345,52 @@ def show_ML_model_page():
                             "2️⃣ Force Plot",
                             "3️⃣ Summary / Beeswarm Plot",
                             "4️⃣ Dependence Plot",
-                            "5️⃣ Bar Plot (Feature Importance)"
-                        ],
-                        horizontal=False
+                            "5️⃣ Bar Plot"
+                        ]
                     )
 
-                    # ---------------------------
-                    # 1️⃣ Waterfall Plot
-                    # ---------------------------
-                    if "Waterfall" in shap_plot_type:
-                        st.info(
-                            "💧 **Waterfall Plot:** Shows how each feature pushes an individual prediction "
-                            "from the baseline value to the final prediction."
+                    if shap_plot_type == "1️⃣ Waterfall Plot":
+                        idx = st.number_input(
+                            "Select sample index",
+                            0,
+                            len(shap_X) - 1,
+                            0
                         )
-                        idx = st.number_input("Select sample index", 0, len(X) - 1, 0)
-                        fig = plt.figure()
-                        shap.plots.waterfall(shap_values[idx], show=False)
-                        st.pyplot(fig)
-                        plt.close()
-
-                    # ---------------------------
-                    # 2️⃣ Force Plot
-                    # ---------------------------
-                    elif "Force" in shap_plot_type:
-                        st.info(
-                            "🧭 **Force Plot:** Compact version of the waterfall plot, showing features "
-                            "as arrows pushing toward higher or lower predictions."
-                        )
-                        idx = st.number_input("Select sample index", 0, len(X) - 1, 0)
-
                         fig = plt.figure()
                         shap.plots.waterfall(shap_values[idx], show=False)
                         st.pyplot(fig)
                         plt.close(fig)
 
-                    # ---------------------------
-                    # 3️⃣ Summary / Beeswarm Plot
-                    # ---------------------------
-                    elif "Summary" in shap_plot_type:
-                        st.info(
-                            "🐝 **Beeswarm Plot:** Displays feature importance and the effect of feature "
-                            "values across all samples."
+                    elif shap_plot_type == "2️⃣ Force Plot":
+                        idx = st.number_input(
+                            "Select sample index",
+                            0,
+                            len(shap_X) - 1,
+                            0
                         )
+                        fig = plt.figure()
+                        shap.plots.force(shap_values[idx], matplotlib=True, show=False)
+                        st.pyplot(fig)
+                        plt.close(fig)
+
+                    elif shap_plot_type == "3️⃣ Summary / Beeswarm Plot":
                         fig = plt.figure()
                         shap.plots.beeswarm(shap_values, show=False)
                         st.pyplot(fig)
                         plt.close(fig)
 
-
-                    # ---------------------------
-                    # 4️⃣ Dependence Plot
-                    # ---------------------------
-                    elif "Dependence" in shap_plot_type:
-                        st.info(
-                            "📈 **Dependence Plot:** Shows how a single feature’s value impacts its SHAP "
-                            "contribution. Useful for detecting non-linear or interaction effects."
-                        )
-
-                        selected_feat = st.selectbox("Select feature", feature_names)
-
+                    elif shap_plot_type == "4️⃣ Dependence Plot":
+                        selected_feat = st.selectbox("Select feature", selected_features)
                         fig = plt.figure()
-                        shap.plots.scatter(
-                            shap_values[:, selected_feat],
-                            color=shap_values
-                        )
+                        shap.plots.scatter(shap_values[:, selected_feat], show=False)
                         st.pyplot(fig)
                         plt.close(fig)
 
-
-                    # ---------------------------
-                    # 5️⃣ Bar Plot
-                    # ---------------------------
-                    elif "Bar Plot" in shap_plot_type:
-                        st.info(
-                            "📊 **Bar Plot:** Displays the average absolute SHAP value for each feature, "
-                            "indicating overall feature importance."
-                        )
+                    elif shap_plot_type == "5️⃣ Bar Plot":
                         fig = plt.figure()
                         shap.plots.bar(shap_values, show=False)
                         st.pyplot(fig)
                         plt.close(fig)
-
 
                 except Exception as e:
                     st.warning(f"⚠️ SHAP visualization failed: {e}")
