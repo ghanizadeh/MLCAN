@@ -178,6 +178,64 @@ def update_header(content: str, *, new_val: float, kind: str):
 
     return content, comp_name, (old_val, new_val, scale)
 
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def plot_corr_heatmap(
+    df,
+    method="pearson",
+    figsize=(14, 12),
+    annot=True,
+    fmt=".2f",
+    cmap="coolwarm",
+    center=0,
+    triangle=False,
+    font_scale=0.7   # 👈 control everything from here
+):
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    # Convert to numeric (safe)
+    df_num = df.apply(pd.to_numeric, errors="coerce").select_dtypes(include="number")
+
+    if df_num.shape[1] < 2:
+        st.warning("⚠️ Not enough numeric columns.")
+        return
+
+    corr = df_num.corr(method=method)
+
+    mask = np.triu(np.ones_like(corr, dtype=bool)) if triangle else None
+
+    # 👇 control global scaling
+    sns.set_context("notebook", font_scale=font_scale)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    sns.heatmap(
+        corr,
+        mask=mask,
+        annot=annot,
+        fmt=fmt,
+        cmap=cmap,
+        center=center,
+        square=True,
+        linewidths=0.5,
+        cbar_kws={"shrink": 0.7},
+        annot_kws={"size": 8},   # 👈 numbers inside cells
+        ax=ax
+    )
+
+    ax.set_title(f"{method.capitalize()} Correlation", fontsize=12)
+    ax.tick_params(axis='x', labelsize=8, rotation=45)
+    ax.tick_params(axis='y', labelsize=8)
+
+    plt.tight_layout()
+
+    st.pyplot(fig)
 
 # ==========================
 # 3. Streamlit App
@@ -203,6 +261,8 @@ def show_olga_convertor_page():
 
         st.write("### Original Data Preview")
         st.dataframe(df)
+        plot_corr_heatmap(df)
+
 
         # Column selection
         selected_cols = st.multiselect("Select columns to edit:", columns)
