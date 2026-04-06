@@ -567,8 +567,8 @@ def show_olga_convertor_page():
         st.dataframe(df)
         plot_corr_heatmap(df)
         render(df)
-
-
+        st.divider()
+        st.subheader("📝 Edit a column")
         # Column selection
         selected_cols = st.multiselect("Select columns to edit:", columns)
 
