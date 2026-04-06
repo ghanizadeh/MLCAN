@@ -1,8 +1,22 @@
 import streamlit as st
-import pandas as pd
- 
-import re
+import matplotlib.pyplot as plt
 import math
+from sklearn.preprocessing import StandardScaler
+from state.session import init_state, get_value, set_state
+from components.column_selector import render_column_selector
+from core.data.preprocessor import (
+    extended_describe, categorical_summary,
+    categorical_warnings, categorical_imbalance,
+)
+from core.viz.eda import (
+    draw_correlation_heatmap, draw_boxplots,
+    draw_histograms, draw_scatter,
+    draw_pairwise_scatter_with_hist,
+)
+from core.viz.style import fig_to_st
+from config.settings import MAX_HEATMAP_FEATURES
+import re
+ 
 
 def render(df):
 
