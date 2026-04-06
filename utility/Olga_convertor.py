@@ -2,7 +2,6 @@ import streamlit as st
 import matplotlib.pyplot as plt
 import math
 from sklearn.preprocessing import StandardScaler
-from state.session import init_state, get_value, set_state
 from components.column_selector import render_column_selector
 from core.data.preprocessor import (
     extended_describe, categorical_summary,
