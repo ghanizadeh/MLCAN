@@ -30,8 +30,8 @@ def render(df):
     with st.expander("Column selector", expanded=True):
         features, target = render_column_selector(
             df,
-            default_features=get_value("data.feature_names"),
-            default_target=get_value("data.target_name"),
+            #default_features=get_value("data.feature_names"),
+            #default_target=get_value("data.target_name"),
             key_prefix="eda",
         )
 
