@@ -734,7 +734,7 @@ def show_ML_model_page():
                 and split_info["test_idx"] is not None
                 and "val_idx" in split_info
             )
-
+            evals_result = None
             if eval_method == "Train-Test Split":
                 if has_predefined_split:
                     # ✅ Use Section 0 split
@@ -767,7 +767,7 @@ def show_ML_model_page():
 
                 st.info(f"Size of **Train set**: {X_train.shape}")
                 st.info(f"Size of **Test set**: {X_test.shape}")
-
+                evals_result = None
                 if use_gridsearch:
                     param_grid = get_param_grid(model_choice)
                     cv = GroupKFold(n_splits=5)
@@ -788,9 +788,22 @@ def show_ML_model_page():
 
                     final_model = pipeline.best_estimator_
 
+                
                 else:
+                    #evals_result = None
                     final_model = clone(base_model)
-                    final_model.fit(X_train, y_train)
+                    if model_choice == "CatBoost":
+                        final_model.fit(
+                            X_train, y_train,
+                            eval_set=(X_test, y_test),   # ⚠️ use X_val,y_val if available
+                            early_stopping_rounds=50,
+                            use_best_model=True,
+                            verbose=False
+                        )
+                        evals_result = final_model.get_evals_result()
+
+                    else:
+                        final_model.fit(X_train, y_train)
 
                 # ---------- Predictions ----------
                 y_train_pred = final_model.predict(X_train)
@@ -832,6 +845,7 @@ def show_ML_model_page():
                     show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)")
                     show_feat_import = st.checkbox("5️⃣ Feature Importance")
                     show_abs_err = st.checkbox("6️⃣ Error Magnitude (Absolute Error)")
+                    show_epoch_plot = st.checkbox("7️⃣ Training Progress (Epoch Plot)")
                     
                     # ===== 1️⃣ Prediction Tracking (with Mean Lines) =====
                     if show_tracking:
@@ -908,6 +922,35 @@ def show_ML_model_page():
                         ax.set_title("Absolute Error per Sample")
                         ax.set_xlabel("Sample Index"); ax.set_ylabel("|Error|")
                         st.pyplot(fig); plt.close(fig)
+
+                    # ===== 7️⃣ Epoch Plot (CatBoost only) =====
+                    if show_epoch_plot:
+                        if model_choice != "CatBoost":
+                            st.info("ℹ️ Epoch plot is only available for CatBoost.")
+                        elif evals_result is None:
+                            st.warning("⚠️ No training history found. Make sure Grid Search is disabled for epoch tracking.")
+                        else:
+                            try:
+                                fig, ax = plt.subplots(figsize=(10, 5))
+                                train_rmse = evals_result["learn"]["RMSE"]
+                                val_rmse = evals_result["validation"]["RMSE"]
+                                ax.plot(train_rmse, label="Train RMSE", linewidth=2, alpha=0.8)
+                                ax.plot(val_rmse, label="Test RMSE", linewidth=2, alpha=0.9)
+                                best_iter = final_model.get_best_iteration()
+                                best_score = val_rmse[best_iter]
+                                ax.axvline(best_iter, linestyle="--", linewidth=2,
+                                           label=f"Best Iter = {best_iter}")
+                                ax.scatter(best_iter, best_score, zorder=5)
+                                ax.set_xlabel("Iteration")
+                                ax.set_ylabel("RMSE")
+                                ax.set_title("CatBoost Training Progress with Early Stopping")
+                                ax.legend()
+                                st.pyplot(fig)
+                                plt.close(fig)
+                                st.info(f"✅ Best iteration: {best_iter}")
+                                st.info(f"📉 Best test RMSE: {best_score:.4f}")
+                            except Exception as e:
+                                st.warning(f"⚠️ Could not plot epoch history: {e}")
 
             #if eval_method == "Train-Test Split":
             elif eval_method == "Train-Validation-Test (Industry Standard)":
@@ -1005,6 +1048,7 @@ def show_ML_model_page():
                 # ==================================================
                 # MODEL TRAINING
                 # ==================================================
+                evals_result = None
                 if use_gridsearch:
                     param_grid = get_param_grid(model_choice)
                     cv = GroupKFold(n_splits=5)
@@ -1025,8 +1069,20 @@ def show_ML_model_page():
                     st.success("✅ Grid Search Completed")
 
                 else:
+                    #evals_result = None
                     final_model = clone(base_model)
-                    final_model.fit(X_train, y_train)
+                    if model_choice == "CatBoost":
+                        final_model.fit(
+                            X_train, y_train,
+                            eval_set=(X_val, y_val),   # ✅ IMPORTANT (use validation here)
+                            early_stopping_rounds=50,
+                            use_best_model=True,
+                            verbose=False
+                        )
+                        evals_result = final_model.get_evals_result()
+
+                    else:
+                        final_model.fit(X_train, y_train)
 
                 # ==================================================
                 # PREDICTIONS (single source of truth)
@@ -1084,7 +1140,8 @@ def show_ML_model_page():
                     show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)")
                     show_feat_import = st.checkbox("5️⃣ Feature Importance")
                     show_abs_err = st.checkbox("6️⃣ Error Magnitude (Absolute Error)")
-
+                    show_epoch_plot = st.checkbox("7️⃣ Training Progress (Epoch Plot)")
+                    residuals = y_test_pred - y_test.values
                     # ===== 1️⃣ Prediction Tracking (with Mean Lines) =====
                     if show_tracking:
                         fig, ax = plt.subplots(figsize=(10,5))
@@ -1165,6 +1222,40 @@ def show_ML_model_page():
                         st.pyplot(fig)
                         plt.close(fig)
 
+                    # ===== 7️⃣ Epoch Plot (CatBoost only) =====
+                    if show_epoch_plot and model_choice == "CatBoost" and evals_result is not None:
+
+                        try:
+                            fig, ax = plt.subplots(figsize=(10,5))
+
+                            train_rmse = evals_result["learn"]["RMSE"]
+                            val_rmse = evals_result["validation"]["RMSE"]
+
+                            ax.plot(train_rmse, label="Train RMSE", linewidth=2, alpha=0.8)
+                            ax.plot(val_rmse, label="Validation RMSE", linewidth=2, alpha=0.9)
+
+                            # 🔥 Best iteration
+                            best_iter = final_model.get_best_iteration()
+                            best_score = val_rmse[best_iter]
+
+                            ax.axvline(best_iter, linestyle="--", linewidth=2,
+                                    label=f"Best Iter = {best_iter}")
+
+                            ax.scatter(best_iter, best_score)
+
+                            ax.set_xlabel("Iteration")
+                            ax.set_ylabel("RMSE")
+                            ax.set_title("CatBoost Training Progress with Early Stopping")
+                            ax.legend()
+
+                            st.pyplot(fig)
+                            plt.close(fig)
+
+                            st.info(f"✅ Best iteration: {best_iter}")
+                            st.info(f"📉 Best validation RMSE: {best_score:.4f}")
+
+                        except Exception as e:
+                            st.warning(f"⚠️ Could not plot epoch history: {e}")
 
             else:  # ================= Group K-Fold CV + Hold-out Test =================
                 if has_predefined_split:
@@ -1316,6 +1407,82 @@ def show_ML_model_page():
                         ).round(4)
                     )
 
+                    plot_predicted_vs_measured_separately(
+                        y_test, y_test_pred, "Test", model_choice, selected_target
+                    )
+
+                # ==================================================
+                # OPTIONAL PERFORMANCE PLOTS (Group K-Fold)
+                # ==================================================
+                st.markdown("### Optional Performance Plots")
+                with st.expander("Show / Hide Performance Plots", expanded=False):
+                    show_tracking = st.checkbox("1️⃣ Prediction Tracking (with Mean Lines)", key="kfold_tracking")
+                    show_error_mean_std = st.checkbox("2️⃣ Prediction Error with Mean ± STD", key="kfold_err_meanstd")
+                    show_residuals_pred = st.checkbox("3️⃣ Residuals vs Predicted", key="kfold_resid_pred")
+                    show_residual_dist = st.checkbox("4️⃣ Residual Distribution (Histogram + KDE)", key="kfold_resid_dist")
+                    show_feat_import = st.checkbox("5️⃣ Feature Importance", key="kfold_feat_import")
+                    show_abs_err = st.checkbox("6️⃣ Error Magnitude (Absolute Error)", key="kfold_abs_err")
+                    residuals_kf = y_test_pred - y_test.values
+
+                    if show_tracking:
+                        fig, ax = plt.subplots(figsize=(10, 5))
+                        ax.plot(y_test.values, label="True Signal", color='teal', linewidth=2)
+                        ax.plot(y_test_pred, label="Predicted Signal", color='orange', linestyle='--', linewidth=2)
+                        ax.axhline(np.mean(y_test.values), color='teal', linestyle=':', linewidth=1.5)
+                        ax.axhline(np.mean(y_test_pred), color='orange', linestyle=':', linewidth=1.5)
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel(selected_target)
+                        ax.set_title("True vs. Predicted Signal (with Mean Lines)")
+                        ax.legend()
+                        st.pyplot(fig); plt.close(fig)
+
+                    if show_error_mean_std:
+                        mean_error = np.mean(residuals_kf)
+                        std_error = np.std(residuals_kf)
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        ax.plot(residuals_kf, color='red', alpha=0.6)
+                        ax.axhline(mean_error, color='blue', linestyle='--', linewidth=2,
+                                   label=f"Mean Error = {mean_error:.4f}")
+                        ax.axhline(0, color='black', linestyle=':')
+                        ax.fill_between(range(len(residuals_kf)),
+                                        mean_error - std_error,
+                                        mean_error + std_error,
+                                        color='blue', alpha=0.1,
+                                        label=f"±1 STD ({std_error:.4f})")
+                        ax.set_xlabel("Sample Index")
+                        ax.set_ylabel("Error (Pred - True)")
+                        ax.set_title("Prediction Error with Mean ± STD")
+                        ax.legend()
+                        st.pyplot(fig); plt.close(fig)
+
+                    if show_residuals_pred:
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        ax.scatter(y_test_pred, residuals_kf, color="purple", alpha=0.6)
+                        ax.axhline(0, color="black", linestyle="--")
+                        ax.set_xlabel("Predicted"); ax.set_ylabel("Residuals")
+                        ax.set_title("Residuals vs Predicted")
+                        st.pyplot(fig); plt.close(fig)
+
+                    if show_residual_dist:
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        sns.histplot(residuals_kf, kde=True, bins=25, color="orange", ax=ax)
+                        ax.set_title("Residual Distribution (Histogram + KDE)")
+                        st.pyplot(fig); plt.close(fig)
+
+                    if show_feat_import and hasattr(final_model, "feature_importances_"):
+                        imp = final_model.feature_importances_
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        pd.Series(imp, index=selected_features).sort_values().plot.barh(ax=ax, color="teal")
+                        ax.set_title("Feature Importance")
+                        st.pyplot(fig); plt.close(fig)
+
+                    if show_abs_err:
+                        abs_err_kf = np.abs(residuals_kf)
+                        fig, ax = plt.subplots(figsize=(10, 4))
+                        ax.plot(abs_err_kf, color="red", alpha=0.7)
+                        ax.set_title("Absolute Error per Sample")
+                        ax.set_xlabel("Sample Index"); ax.set_ylabel("|Error|")
+                        st.pyplot(fig); plt.close(fig)
 
             # ==================================================
             #                   Interpretation  
