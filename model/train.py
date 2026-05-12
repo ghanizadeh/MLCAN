@@ -219,7 +219,19 @@ def show_ML_model_page():
     # ===============================
     if df is not None:
         st.info(f"Dataset shape: {df.shape}")
-        filename_col = next(c for c in df.columns if c.lower() == "filename")
+        # List of potential variations (all lowercase)
+        targets = {"filename", "sourcefile", "experimentid", "sourcem"}
+        
+        # Find the first column that matches one of the targets
+        filename_col = next(
+            (c for c in df.columns if c.lower() in targets), 
+            None
+        )
+        
+        if filename_col:
+            print(f"Found column: {filename_col}")
+        else:
+            print("No matching column found.")
         df_base = df.dropna(subset=[filename_col]).drop_duplicates() # minimal cleaning (NO feature logic)
  
         # ============================================================
